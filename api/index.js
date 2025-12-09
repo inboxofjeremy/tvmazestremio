@@ -2,13 +2,11 @@ export const config = {
   runtime: "edge",
 };
 
-// -------------------------
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "*",
   "Content-Type": "application/json",
 };
-// -------------------------
 
 async function getJSON(url) {
   const res = await fetch(url, { cache: "no-store" });
@@ -16,19 +14,20 @@ async function getJSON(url) {
   return res.json();
 }
 
-function last7Dates() {
-  const list = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    list.push(d.toISOString().split("T")[0]);
-  }
-  return list;
-}
-
+// Remove HTML tags
 function cleanHTML(str) {
   if (!str) return "";
   return str.replace(/<[^>]+>/g, "").trim();
+}
+
+function last7Dates() {
+  const out = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    out.push(d.toISOString().split("T")[0]);
+  }
+  return out;
 }
 
 function pickStamp(ep) {
@@ -38,32 +37,40 @@ function pickStamp(ep) {
   );
 }
 
-// ❗ NEW: Improved blocking — removes CN / JP / KR / TW properly
+// BLOCK ***ALL*** Asian region content
 function blockForeign(show) {
   const lang = (show.language || "").toLowerCase();
-  const country = show.network?.country?.code || show.webChannel?.country?.code || "";
 
-  // block by language
-  if (["japanese", "russian", "mandarin", "chinese", "korean"].includes(lang))
-    return true;
+  // Simple language block
+  if (["chinese", "japanese", "korean"].includes(lang)) return true;
 
-  // block by region code
-  if (["JP", "CN", "TW", "KR", "RU"].includes(country)) return true;
+  // Region block
+  const country =
+    show.network?.country?.code ||
+    show.webChannel?.country?.code ||
+    "";
 
-  // block by characters (CJK + Cyrillic)
-  const name = show.name || "";
-  if (/[ء-ي]/.test(name)) return true; // Arabic
-  if (/[\u0400-\u04FF]/.test(name)) return true; // Cyrillic
-  if (/[\u3040-\u30FF\u4E00-\u9FFF]/.test(name)) return true; // CJK
+  if (["CN", "JP", "KR", "TW"].includes(country)) return true;
+
+  // Platform block
+  const platform =
+    (show.webChannel?.name || "").toLowerCase();
+
+  const asianPlatforms = [
+    "tencent",
+    "youku",
+    "iqiyi",
+    "bilibili",
+    "mango",
+    "wetv",
+  ];
+
+  if (asianPlatforms.some(p => platform.includes(p))) return true;
+
+  // Unicode CJK detection (catch-all)
+  if (show.name.match(/[\u3040-\u30FF\u4E00-\u9FFF]/)) return true;
 
   return false;
-}
-
-// ❗ NEW: fallback loader for shows with missing _embedded.show
-async function loadShowBasic(id) {
-  const url = `https://api.tvmaze.com/shows/${id}`;
-  const data = await getJSON(url);
-  return data?.id ? data : null;
 }
 
 async function fetchShows() {
@@ -71,25 +78,22 @@ async function fetchShows() {
   const map = new Map();
 
   for (const date of dates) {
-    const urlA = `https://api.tvmaze.com/schedule?country=US&date=${date}&embed=show`;
-    const urlB = `https://api.tvmaze.com/schedule/web?date=${date}&embed=show`;
+    const urlA = `https://api.tvmaze.com/schedule?country=US&date=${date}`;
+    const urlB = `https://api.tvmaze.com/schedule/web?date=${date}`;
 
     const normal = await getJSON(urlA);
     const web = await getJSON(urlB);
+
     const all = []
       .concat(Array.isArray(normal) ? normal : [])
       .concat(Array.isArray(web) ? web : []);
 
     for (const ep of all) {
-      let show = ep?._embedded?.show;
+      // READ SHOW PROPERLY (fixes NCIS issue)
+      const show = ep.show || ep._embedded?.show;
+      if (!show) continue;
 
-      // ❗ Fallback if show missing (this fixes NCIS / Watson / DMV)
-      if (!show && ep.show?.id) {
-        show = await loadShowBasic(ep.show.id);
-      }
-
-      if (!show?.id) continue;
-
+      // FOREIGN BLOCK
       if (blockForeign(show)) continue;
 
       const stamp = pickStamp(ep);
@@ -132,10 +136,10 @@ async function fetchMeta(showId) {
 
   const episodes = (show._embedded?.episodes || []).map((ep) => ({
     id: `tvmaze:${ep.id}`,
-    title: ep.name || `Episode ${ep.number}`,
+    title: ep.name,
     season: ep.season,
     episode: ep.number,
-    released: ep.airdate || null,
+    released: ep.airdate,
     overview: cleanHTML(ep.summary),
   }));
 
@@ -152,21 +156,19 @@ async function fetchMeta(showId) {
   };
 }
 
-// ------------------
-// MAIN HANDLER
-// ------------------
 export default async function handler(req) {
   const url = new URL(req.url);
   const pathname = url.pathname;
 
-  if (pathname === "/api/manifest.json" || pathname === "/manifest.json") {
+  if (pathname === "/manifest.json") {
     return new Response(
       JSON.stringify(
         {
           id: "tvmaze-last7-addon",
           version: "1.0.0",
           name: "TVMaze – Last 7 Days",
-          description: "Lists English-language US shows aired in the last 7 days.",
+          description:
+            "Lists US/English shows aired in the last 7 days.",
           catalogs: [
             {
               type: "series",
@@ -186,17 +188,15 @@ export default async function handler(req) {
     );
   }
 
-  if (pathname.startsWith("/api/catalog/series/tvmaze_last7.json") ||
-      pathname.startsWith("/catalog/series/tvmaze_last7.json")) {
-
+  if (pathname.startsWith("/catalog/series/tvmaze_last7.json")) {
     const shows = await fetchShows();
     return new Response(JSON.stringify({ metas: shows }, null, 2), {
       headers: CORS,
     });
   }
 
-  if (pathname.startsWith("/api/meta/series/") || pathname.startsWith("/meta/series/")) {
-    const id = pathname.split("/").pop().replace(".json", "");
+  if (pathname.startsWith("/meta/series/")) {
+    const id = pathname.split("/")[3].replace(".json", "");
     const meta = await fetchMeta(id);
     return new Response(JSON.stringify(meta, null, 2), {
       headers: CORS,
