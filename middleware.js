@@ -1,10 +1,19 @@
 export const config = {
-  matcher: [
-    "/manifest.json",
-    "/catalog/series/tvmaze_last7.json",
-    "/meta/series/:id.json"
-  ]
+  runtime: "edge",
 };
+
+// Helper for Stremio-friendly JSON responses
+function jsonResponse(obj, status = 200) {
+  return new Response(JSON.stringify(obj, null, 2), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+    },
+  });
+}
 
 async function getJSON(url) {
   const res = await fetch(url, { cache: "no-store" });
@@ -23,8 +32,10 @@ function last7Dates() {
 }
 
 function pickStamp(ep) {
-  return ep?.airstamp ||
-    (ep?.airdate ? ep.airdate + "T00:00:00Z" : "1970-01-01T00:00:00Z");
+  return (
+    ep?.airstamp ||
+    (ep?.airdate ? ep.airdate + "T00:00:00Z" : "1970-01-01T00:00:00Z")
+  );
 }
 
 async function fetchShows() {
@@ -32,10 +43,15 @@ async function fetchShows() {
   const map = new Map();
 
   for (const date of dates) {
-    const normal = await getJSON(`https://api.tvmaze.com/schedule?country=US&date=${date}`);
-    const web = await getJSON(`https://api.tvmaze.com/schedule/web?date=${date}`);
+    const urlA = `https://api.tvmaze.com/schedule?country=US&date=${date}`;
+    const urlB = `https://api.tvmaze.com/schedule/web?date=${date}`;
 
-    const all = [].concat(normal || []).concat(web || []);
+    const normal = await getJSON(urlA);
+    const web = await getJSON(urlB);
+
+    const all = []
+      .concat(Array.isArray(normal) ? normal : [])
+      .concat(Array.isArray(web) ? web : []);
 
     for (const ep of all) {
       const show = ep?._embedded?.show;
@@ -52,7 +68,7 @@ async function fetchShows() {
           description: show.summary || "",
           poster: show.image?.medium || show.image?.original || null,
           background: show.image?.original || null,
-          airstamp: stamp
+          airstamp: stamp,
         });
       }
     }
@@ -63,30 +79,30 @@ async function fetchShows() {
   );
 }
 
-async function fetchMeta(id) {
-  const real = id.replace("tvmaze:", "");
+async function fetchMeta(showId) {
+  const id = showId.replace("tvmaze:", "");
   const show = await getJSON(
-    `https://api.tvmaze.com/shows/${real}?embed=episodes`
+    `https://api.tvmaze.com/shows/${id}?embed=episodes`
   );
 
   if (!show?.id) {
     return {
       meta: {
-        id,
+        id: showId,
         type: "series",
         name: "Unknown Show",
-        videos: []
-      }
+        videos: [],
+      },
     };
   }
 
-  const eps = (show._embedded?.episodes || []).map(ep => ({
+  const episodes = (show._embedded?.episodes || []).map((ep) => ({
     id: `tvmaze:${ep.id}`,
     title: ep.name || `Episode ${ep.number}`,
     season: ep.season,
     episode: ep.number,
     released: ep.airdate || null,
-    overview: ep.summary || ""
+    overview: ep.summary || "",
   }));
 
   return {
@@ -97,22 +113,23 @@ async function fetchMeta(id) {
       description: show.summary || "",
       poster: show.image?.original || show.image?.medium || null,
       background: show.image?.original || null,
-      videos: eps
-    }
+      videos: episodes,
+    },
   };
 }
 
-// MAIN HANDLER (Middleware)
+// MAIN HANDLER
 export default async function middleware(req) {
   const url = new URL(req.url);
+  const pathname = url.pathname;
 
   // MANIFEST
-  if (url.pathname === "/manifest.json") {
-    return new Response(JSON.stringify({
+  if (pathname === "/manifest.json") {
+    return jsonResponse({
       id: "tvmaze-last7-addon",
       version: "1.0.0",
       name: "TVMaze – Last 7 Days",
-      description: "Shows aired in the last 7 days (including web/Netflix).",
+      description: "Lists all shows aired in the last 7 days (including web/Netflix).",
       resources: ["catalog", "meta"],
       types: ["series"],
       idPrefixes: ["tvmaze"],
@@ -121,30 +138,25 @@ export default async function middleware(req) {
           type: "series",
           id: "tvmaze_last7",
           name: "TVMaze Last 7 Days",
-          extra: []
-        }
-      ]
-    }, null, 2), {
-      headers: { "Content-Type": "application/json" }
+          extra: [],
+        },
+      ],
     });
   }
 
   // CATALOG
-  if (url.pathname === "/catalog/series/tvmaze_last7.json") {
+  if (pathname.startsWith("/catalog/series/tvmaze_last7.json")) {
     const shows = await fetchShows();
-    return new Response(JSON.stringify({ metas: shows }, null, 2), {
-      headers: { "Content-Type": "application/json" }
-    });
+    return jsonResponse({ metas: shows });
   }
 
   // META
-  if (url.pathname.startsWith("/meta/series/")) {
-    const id = url.pathname.replace("/meta/series/", "").replace(".json", "");
+  if (pathname.startsWith("/meta/series/")) {
+    const parts = pathname.split("/");
+    const id = parts[3].replace(".json", "");
     const meta = await fetchMeta(id);
-    return new Response(JSON.stringify(meta, null, 2), {
-      headers: { "Content-Type": "application/json" }
-    });
+    return jsonResponse(meta);
   }
 
-  return new Response("Not matched", { status: 404 });
+  return new Response("Not found", { status: 404 });
 }
