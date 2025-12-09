@@ -3,8 +3,13 @@ export const config = {
 };
 
 // -------------------------
-// Utility helpers
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "*",
+  "Content-Type": "application/json",
+};
 // -------------------------
+
 async function getJSON(url) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) return [];
@@ -33,25 +38,18 @@ function pickStamp(ep) {
   );
 }
 
-// REMOVE Japanese + Russian
 function blockForeign(show) {
   const lang = (show.language || "").toLowerCase();
   const name = (show.name || "").toLowerCase();
 
-  // language-based block
   if (lang.includes("japanese")) return true;
   if (lang.includes("russian")) return true;
-
-  // title-based safety
-  if (name.match(/[\u0400-\u04FF]/)) return true; // Cyrillic characters
-  if (name.match(/[\u3040-\u30FF\u4E00-\u9FFF]/)) return true; // CJK block
+  if (name.match(/[\u0400-\u04FF]/)) return true;
+  if (name.match(/[\u3040-\u30FF\u4E00-\u9FFF]/)) return true;
 
   return false;
 }
 
-// -------------------------
-// FETCH SHOWS
-// -------------------------
 async function fetchShows() {
   const dates = last7Dates();
   const map = new Map();
@@ -71,7 +69,6 @@ async function fetchShows() {
       const show = ep?._embedded?.show;
       if (!show?.id) continue;
 
-      // FILTER foreign shows (Japanese / Russian)
       if (blockForeign(show)) continue;
 
       const stamp = pickStamp(ep);
@@ -96,9 +93,6 @@ async function fetchShows() {
   );
 }
 
-// -------------------------
-// FETCH META
-// -------------------------
 async function fetchMeta(showId) {
   const id = showId.replace("tvmaze:", "");
   const url = `https://api.tvmaze.com/shows/${id}?embed=episodes`;
@@ -137,14 +131,10 @@ async function fetchMeta(showId) {
   };
 }
 
-// -------------------------
-// MAIN HANDLER
-// -------------------------
 export default async function handler(req) {
   const url = new URL(req.url);
   const pathname = url.pathname;
 
-  // MANIFEST
   if (pathname === "/manifest.json") {
     return new Response(
       JSON.stringify(
@@ -153,7 +143,7 @@ export default async function handler(req) {
           version: "1.0.0",
           name: "TVMaze – Last 7 Days",
           description:
-            "Lists all English-language US shows aired in the last 7 days (includes Netflix/web).",
+            "Lists English-language US shows aired in the last 7 days (includes Netflix/web).",
           catalogs: [
             {
               type: "series",
@@ -169,26 +159,24 @@ export default async function handler(req) {
         null,
         2
       ),
-      { headers: { "Content-Type": "application/json" } }
+      { headers: CORS }
     );
   }
 
-  // CATALOG
   if (pathname.startsWith("/catalog/series/tvmaze_last7.json")) {
     const shows = await fetchShows();
     return new Response(JSON.stringify({ metas: shows }, null, 2), {
-      headers: { "Content-Type": "application/json" },
+      headers: CORS,
     });
   }
 
-  // META
   if (pathname.startsWith("/meta/series/")) {
     const id = pathname.split("/")[3].replace(".json", "");
     const meta = await fetchMeta(id);
     return new Response(JSON.stringify(meta, null, 2), {
-      headers: { "Content-Type": "application/json" },
+      headers: CORS,
     });
   }
 
-  return new Response("Not found", { status: 404 });
+  return new Response("Not found", { status: 404, headers: CORS });
 }
