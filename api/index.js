@@ -27,10 +27,12 @@ async function fetchJSON(url) {
   }
 }
 
-// Convert any Date or ISO string to YYYY-MM-DD (UTC)
-function getYMD(date) {
+// Convert any Date or ISO string to YYYY-MM-DD UTC
+function getYMDUTC(date) {
   const d = new Date(date);
-  return d.toISOString().slice(0, 10);
+  return d.getUTCFullYear() + '-' +
+         String(d.getUTCMonth() + 1).padStart(2,'0') + '-' +
+         String(d.getUTCDate()).padStart(2,'0');
 }
 
 function cleanHTML(str) {
@@ -40,7 +42,7 @@ function cleanHTML(str) {
 // pickStamp: prefer airdate, fallback to airstamp
 function pickStamp(ep) {
   if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
-  if (ep?.airstamp) return getYMD(ep.airstamp);
+  if (ep?.airstamp) return getYMDUTC(ep.airstamp);
   return null;
 }
 
@@ -132,11 +134,12 @@ async function tmdbToTvmazeShows(list) {
 // BUILD SHOWS (MAIN FUNCTION)
 // ==========================
 async function buildShows() {
+  // generate last 7 days in UTC
+  const today = new Date();
   const dates = [];
   for (let i = 0; i < 7; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    dates.push(getYMD(d));
+    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i));
+    dates.push(getYMDUTC(d));
   }
 
   const startDateStr = dates[dates.length - 1]; // 7 days ago
@@ -167,7 +170,6 @@ async function buildShows() {
         if (!cur) {
           showMap.set(show.id, { show, episodes: [stamp] });
         } else {
-          // merge episodes instead of skipping
           cur.episodes.push(stamp);
         }
       }
@@ -196,8 +198,7 @@ async function buildShows() {
       if (!cur) {
         showMap.set(show.id, { show: detail, episodes: stamps });
       } else {
-        // merge episodes
-        cur.episodes.push(...stamps);
+        cur.episodes.push(...stamps); // always merge
       }
     }
   }
