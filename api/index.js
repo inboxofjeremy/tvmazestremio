@@ -97,18 +97,17 @@ async function tmdbToTvmazeShows(list) {
 }
 
 // ==========================
-// LAST 7 DAYS (Option 2)
+// LAST 10 DAYS (Option 2)
 // ==========================
-function filterLast7DaysIncludeFuture(episodes) {
+function filterLastNDaysIncludeFuture(episodes, n = 10) {
   const now = new Date();
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setDate(now.getDate() - 6); // last 7 days including today
-
+  const nDaysAgo = new Date(now);
+  nDaysAgo.setDate(now.getDate() - (n - 1)); // include today
   return episodes.filter(ep => {
     const dateStr = pickDate(ep);
     if (!dateStr) return false;
     const epDate = new Date(dateStr);
-    return epDate >= sevenDaysAgo && epDate <= now; // include slight future UTC airstamps
+    return epDate >= nDaysAgo && epDate <= now; // allow slight future UTC airstamps
   });
 }
 
@@ -117,10 +116,10 @@ function filterLast7DaysIncludeFuture(episodes) {
 // ==========================
 async function buildShows() {
   const showMap = new Map();
+  const now = new Date();
 
   // -------- 1) TVMaze SCHEDULES --------
-  const now = new Date();
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 10; i++) { // 10 days
     const d = new Date(now);
     d.setDate(now.getDate() - i);
     const yyyy = d.getFullYear();
@@ -148,7 +147,7 @@ async function buildShows() {
 
   // -------- 2) TMDB → TVMaze fallback --------
   const startDate = new Date(now);
-  startDate.setDate(now.getDate() - 6);
+  startDate.setDate(now.getDate() - 9); // 10 days total
   const startStr = `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,'0')}-${String(startDate.getDate()).padStart(2,'0')}`;
   const endStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
@@ -169,10 +168,10 @@ async function buildShows() {
     else cur.episodes.push(...eps);
   }
 
-  // -------- 3) FILTER LAST 7 DAYS --------
+  // -------- 3) FILTER LAST 10 DAYS --------
   const list = [...showMap.values()]
     .map(v => {
-      const recentEps = filterLast7DaysIncludeFuture(v.episodes);
+      const recentEps = filterLastNDaysIncludeFuture(v.episodes, 10);
       if (recentEps.length === 0) return null;
       const latestDate = recentEps.map(pickDate).sort().reverse()[0];
       return {
@@ -200,18 +199,18 @@ export default async function handler(req) {
 
   if (p === "/manifest.json") {
     return new Response(JSON.stringify({
-      id: "tvmaze-last7-addon",
+      id: "tvmaze-last10-addon",
       version: "1.0.0",
-      name: "TVMaze – Last 7 Days",
-      description: "English shows aired in last 7 days. No news. Includes reality/game shows.",
-      catalogs: [{ type: "series", id: "tvmaze_last7", name: "TVMaze Last 7 Days" }],
+      name: "TVMaze – Last 10 Days",
+      description: "English shows aired in last 10 days. No news. Includes reality/game shows.",
+      catalogs: [{ type: "series", id: "tvmaze_last10", name: "TVMaze Last 10 Days" }],
       resources: ["catalog","meta"],
       types: ["series"],
       idPrefixes: ["tvmaze"]
     }, null, 2), { headers: CORS });
   }
 
-  if (p.startsWith("/catalog/series/tvmaze_last7.json")) {
+  if (p.startsWith("/catalog/series/tvmaze_last10.json")) {
     const shows = await buildShows();
     return new Response(JSON.stringify({ metas: shows }, null, 2), { headers: CORS });
   }
