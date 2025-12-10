@@ -27,24 +27,6 @@ async function fetchJSON(url) {
   }
 }
 
-// Generate last 7 dates in US Eastern Time (TVMaze schedule aligned)
-function last7DatesUS() {
-  const out = [];
-  const now = new Date();
-  // Simple ET offset: UTC-5
-  const tzOffset = now.getTimezoneOffset() * 60000; // minutes → ms
-  const nowET = new Date(now.getTime() - tzOffset - 5*60*60*1000); // UTC-5
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(nowET);
-    d.setDate(nowET.getDate() - i);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2,'0');
-    const dd = String(d.getDate()).padStart(2,'0');
-    out.push(`${yyyy}-${mm}-${dd}`);
-  }
-  return out;
-}
-
 // Clean HTML tags
 function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
@@ -120,16 +102,38 @@ async function tmdbToTvmazeShows(list) {
 }
 
 // ==========================
+// LAST 7 DAYS FILTER
+// ==========================
+function filterLast7Days(episodes) {
+  const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const sevenDaysAgo = new Date(nowET);
+  sevenDaysAgo.setDate(nowET.getDate() - 6); // include today
+
+  return episodes.filter(ep => {
+    const dateStr = pickDate(ep);
+    if (!dateStr) return false;
+    const epDate = new Date(dateStr);
+    return epDate >= sevenDaysAgo && epDate <= nowET;
+  });
+}
+
+// ==========================
 // BUILD SHOWS (MAIN FUNCTION)
 // ==========================
 async function buildShows() {
-  const dates = last7DatesUS();
-  const startDate = dates[dates.length - 1]; // 7 days ago
-  const endDate = dates[0]; // today
-
   const showMap = new Map();
 
   // -------- 1) TVMaze SCHEDULES --------
+  const dates = []; // placeholder to fetch multiple schedules
+  for (let i = 0; i < 7; i++) {
+    const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+    nowET.setDate(nowET.getDate() - i);
+    const yyyy = nowET.getFullYear();
+    const mm = String(nowET.getMonth() + 1).padStart(2,'0');
+    const dd = String(nowET.getDate()).padStart(2,'0');
+    dates.push(`${yyyy}-${mm}-${dd}`);
+  }
+
   for (const d of dates) {
     const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${d}`);
     const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${d}`);
@@ -145,14 +149,20 @@ async function buildShows() {
         const date = pickDate(ep);
         if (!date) continue;
         const cur = showMap.get(show.id);
-        if (!cur) showMap.set(show.id, { show, episodes: [date] });
-        else cur.episodes.push(date);
+        if (!cur) showMap.set(show.id, { show, episodes: [ep] });
+        else cur.episodes.push(ep);
       }
     }
   }
 
   // -------- 2) TMDB → TVMaze fallback --------
-  const tmdbList = await fetchTMDBDiscover(startDate, endDate);
+  const todayET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const startDate = new Date(todayET);
+  startDate.setDate(todayET.getDate() - 6);
+  const startStr = `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,'0')}-${String(startDate.getDate()).padStart(2,'0')}`;
+  const endStr = `${todayET.getFullYear()}-${String(todayET.getMonth()+1).padStart(2,'0')}-${String(todayET.getDate()).padStart(2,'0')}`;
+
+  const tmdbList = await fetchTMDBDiscover(startStr, endStr);
   const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
 
   for (const entry of tmdbMapped) {
@@ -163,20 +173,18 @@ async function buildShows() {
 
     const detail = await fetchJSON(`https://api.tvmaze.com/shows/${show.id}?embed=episodes`);
     const eps = detail?._embedded?.episodes || [];
-    const datesArr = eps.map(pickDate).filter(Boolean);
-    if (datesArr.length === 0) continue;
-
+    if (eps.length === 0) continue;
     const cur = showMap.get(show.id);
-    if (!cur) showMap.set(show.id, { show: detail, episodes: datesArr });
-    else cur.episodes.push(...datesArr);
+    if (!cur) showMap.set(show.id, { show: detail, episodes: eps });
+    else cur.episodes.push(...eps);
   }
 
-  // -------- 3) FINAL LIST FILTERED LAST 7 DAYS --------
+  // -------- 3) FILTER LAST 7 DAYS --------
   const list = [...showMap.values()]
     .map(v => {
-      const recentEpisodes = v.episodes.filter(d => d >= startDate && d <= endDate);
-      if (recentEpisodes.length === 0) return null;
-      const latest = recentEpisodes.sort().reverse()[0];
+      const recentEps = filterLast7Days(v.episodes);
+      if (recentEps.length === 0) return null;
+      const latestDate = recentEps.map(pickDate).sort().reverse()[0];
       return {
         id: `tvmaze:${v.show.id}`,
         type: "series",
@@ -184,7 +192,7 @@ async function buildShows() {
         description: cleanHTML(v.show.summary),
         poster: v.show.image?.medium || v.show.image?.original || null,
         background: v.show.image?.original || null,
-        latestDate: latest
+        latestDate
       };
     })
     .filter(Boolean)
@@ -206,9 +214,7 @@ export default async function handler(req) {
       version: "1.0.0",
       name: "TVMaze – Last 7 Days",
       description: "English shows aired in last 7 days. No news. Includes reality/game shows.",
-      catalogs: [
-        { type: "series", id: "tvmaze_last7", name: "TVMaze Last 7 Days" }
-      ],
+      catalogs: [{ type: "series", id: "tvmaze_last7", name: "TVMaze Last 7 Days" }],
       resources: ["catalog","meta"],
       types: ["series"],
       idPrefixes: ["tvmaze"]
@@ -223,11 +229,8 @@ export default async function handler(req) {
   if (p.startsWith("/meta/series/")) {
     const id = p.split("/").pop().replace(".json","");
     const showId = id.replace("tvmaze:","");
-
     const show = await fetchJSON(`https://api.tvmaze.com/shows/${showId}?embed=episodes`);
-
     if (!show) return new Response(JSON.stringify({ meta: { id, type:"series", name:"Unknown", videos:[] }}), { headers: CORS });
-
     const eps = (show._embedded?.episodes || []).map(ep => ({
       id: `tvmaze:${ep.id}`,
       title: ep.name || `Episode ${ep.number}`,
@@ -236,7 +239,6 @@ export default async function handler(req) {
       released: ep.airdate || null,
       overview: cleanHTML(ep.summary)
     }));
-
     return new Response(JSON.stringify({
       meta: {
         id: `tvmaze:${show.id}`,
