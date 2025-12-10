@@ -27,19 +27,16 @@ async function fetchJSON(url) {
   }
 }
 
-// Clean HTML tags
 function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
 
-// Pick episode date (airdate preferred, fallback to airstamp)
 function pickDate(ep) {
   if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
   if (ep?.airstamp) return ep.airstamp.slice(0,10);
   return null;
 }
 
-// Foreign language detection
 function isForeign(show) {
   const lang = (show.language || "english").toLowerCase();
   const name = show.name || "";
@@ -53,13 +50,11 @@ function isForeign(show) {
   return false;
 }
 
-// Exclude news shows
 function isNews(show) {
   const t = (show.type || "").toLowerCase();
   return t === "news";
 }
 
-// Concurrency helper
 async function pMap(list, fn, concurrency) {
   const out = [];
   let i = 0;
@@ -74,7 +69,7 @@ async function pMap(list, fn, concurrency) {
 }
 
 // ==========================
-// TMDB → IMDB → TVMaze
+// TMDB → TVMaze
 // ==========================
 async function fetchTMDBDiscover(startDate, endDate) {
   const results = [];
@@ -102,42 +97,40 @@ async function tmdbToTvmazeShows(list) {
 }
 
 // ==========================
-// LAST 7 DAYS FILTER
+// LAST 7 DAYS (Option 2)
 // ==========================
-function filterLast7Days(episodes) {
-  const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const sevenDaysAgo = new Date(nowET);
-  sevenDaysAgo.setDate(nowET.getDate() - 6); // include today
+function filterLast7DaysIncludeFuture(episodes) {
+  const now = new Date();
+  const sevenDaysAgo = new Date(now);
+  sevenDaysAgo.setDate(now.getDate() - 6); // last 7 days including today
 
   return episodes.filter(ep => {
     const dateStr = pickDate(ep);
     if (!dateStr) return false;
     const epDate = new Date(dateStr);
-    return epDate >= sevenDaysAgo && epDate <= nowET;
+    return epDate >= sevenDaysAgo && epDate <= now; // include slight future UTC airstamps
   });
 }
 
 // ==========================
-// BUILD SHOWS (MAIN FUNCTION)
+// BUILD SHOWS
 // ==========================
 async function buildShows() {
   const showMap = new Map();
 
   // -------- 1) TVMaze SCHEDULES --------
-  const dates = []; // placeholder to fetch multiple schedules
+  const now = new Date();
   for (let i = 0; i < 7; i++) {
-    const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-    nowET.setDate(nowET.getDate() - i);
-    const yyyy = nowET.getFullYear();
-    const mm = String(nowET.getMonth() + 1).padStart(2,'0');
-    const dd = String(nowET.getDate()).padStart(2,'0');
-    dates.push(`${yyyy}-${mm}-${dd}`);
-  }
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    const dateStr = `${yyyy}-${mm}-${dd}`;
 
-  for (const d of dates) {
-    const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${d}`);
-    const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${d}`);
-    const c = await fetchJSON(`https://api.tvmaze.com/schedule/full?date=${d}`);
+    const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${dateStr}`);
+    const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${dateStr}`);
+    const c = await fetchJSON(`https://api.tvmaze.com/schedule/full?date=${dateStr}`);
 
     for (const list of [a,b,c]) {
       if (!Array.isArray(list)) continue;
@@ -146,8 +139,6 @@ async function buildShows() {
         if (!show?.id) continue;
         if (isForeign(show)) continue;
         if (isNews(show)) continue;
-        const date = pickDate(ep);
-        if (!date) continue;
         const cur = showMap.get(show.id);
         if (!cur) showMap.set(show.id, { show, episodes: [ep] });
         else cur.episodes.push(ep);
@@ -156,11 +147,10 @@ async function buildShows() {
   }
 
   // -------- 2) TMDB → TVMaze fallback --------
-  const todayET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const startDate = new Date(todayET);
-  startDate.setDate(todayET.getDate() - 6);
+  const startDate = new Date(now);
+  startDate.setDate(now.getDate() - 6);
   const startStr = `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,'0')}-${String(startDate.getDate()).padStart(2,'0')}`;
-  const endStr = `${todayET.getFullYear()}-${String(todayET.getMonth()+1).padStart(2,'0')}-${String(todayET.getDate()).padStart(2,'0')}`;
+  const endStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
 
   const tmdbList = await fetchTMDBDiscover(startStr, endStr);
   const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
@@ -182,7 +172,7 @@ async function buildShows() {
   // -------- 3) FILTER LAST 7 DAYS --------
   const list = [...showMap.values()]
     .map(v => {
-      const recentEps = filterLast7Days(v.episodes);
+      const recentEps = filterLast7DaysIncludeFuture(v.episodes);
       if (recentEps.length === 0) return null;
       const latestDate = recentEps.map(pickDate).sort().reverse()[0];
       return {
