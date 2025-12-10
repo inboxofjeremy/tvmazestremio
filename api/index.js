@@ -42,9 +42,7 @@ function cleanHTML(str) {
 }
 
 function pickStamp(ep) {
-  if (ep?.airdate) return ep.airdate;
-  if (ep?.airstamp) return ep.airstamp.slice(0, 10);
-  return null;
+  return ep?.airstamp || (ep?.airdate ? `${ep.airdate}T00:00:00Z` : null);
 }
 
 function isForeign(show) {
@@ -184,7 +182,7 @@ async function buildShows() {
     );
     const eps = detail?._embedded?.episodes || [];
 
-    const recent = eps.find((e) => pickStamp(e)); // keep all, filter later
+    const recent = eps.find((e) => pickStamp(e));
     if (!recent) continue;
 
     const stamp = pickStamp(recent);
@@ -211,6 +209,7 @@ async function buildShows() {
         latestDate: v.latestAirstamp ? v.latestAirstamp.slice(0, 10) : null,
       };
     })
+    // FILTER AFTER ALL SHOWS ARE COLLECTED
     .filter((s) => {
       if (!s.latestDate) return false;
       const d = new Date(s.latestDate);
