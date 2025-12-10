@@ -194,20 +194,20 @@ async function buildShows() {
     }
   }
 
-  // -------- 3) FINAL LIST WITH LAST 7 DAYS FILTER --------
-  const now = new Date();
+  // -------- 3) FINAL LIST WITH LAST 7 DAYS FILTER (STRING-BASED) --------
+  const today = new Date().toISOString().slice(0, 10);
   const sevenDaysAgo = new Date();
-  sevenDaysAgo.setDate(now.getDate() - 7);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const startDateStr = sevenDaysAgo.toISOString().slice(0, 10);
 
   const list = [...showMap.values()]
     .map((v) => {
       // Keep show if any episode is in the last 7 days
       const recentEpisodes = v.episodes
-        .map((d) => new Date(d))
-        .filter((d) => d >= sevenDaysAgo && d <= now);
+        .filter((d) => d >= startDateStr && d <= today);
       if (recentEpisodes.length === 0) return null;
 
-      const latest = new Date(Math.max(...recentEpisodes));
+      const latest = recentEpisodes.sort().reverse()[0]; // latest episode date
       return {
         id: `tvmaze:${v.show.id}`,
         type: "series",
@@ -215,11 +215,11 @@ async function buildShows() {
         description: cleanHTML(v.show.summary),
         poster: v.show.image?.medium || v.show.image?.original || null,
         background: v.show.image?.original || null,
-        latestDate: latest.toISOString().slice(0, 10),
+        latestDate: latest,
       };
     })
     .filter(Boolean)
-    .sort((a, b) => new Date(b.latestDate) - new Date(a.latestDate));
+    .sort((a, b) => b.latestDate.localeCompare(a.latestDate));
 
   return list;
 }
