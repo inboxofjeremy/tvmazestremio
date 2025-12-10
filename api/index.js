@@ -42,7 +42,10 @@ function cleanHTML(str) {
 }
 
 function pickStamp(ep) {
-  return ep?.airstamp || (ep?.airdate ? `${ep.airdate}T00:00:00Z` : null);
+  // Return airstamp if available, otherwise use airdate at midnight UTC
+  if (ep?.airstamp) return ep.airstamp;
+  if (ep?.airdate) return `${ep.airdate}T00:00:00Z`;
+  return null;
 }
 
 function isForeign(show) {
@@ -185,7 +188,7 @@ async function buildShows() {
     );
     const eps = detail?._embedded?.episodes || [];
 
-    const recent = eps.find((e) => pickStamp(e)); // keep all, will filter later
+    const recent = eps.find((e) => pickStamp(e)); // keep all, filter later
     if (!recent) continue;
 
     const stamp = pickStamp(recent);
@@ -212,10 +215,12 @@ async function buildShows() {
         airstamp: v.latestAirstamp,
       };
     })
-    // filter shows with airdate/airstamp in last 7 days
+    // filter shows with airdate/airstamp in last 7 days and valid date
     .filter((s) => {
       if (!s.airstamp) return false;
-      return new Date(s.airstamp) >= sevenDaysAgo;
+      const date = new Date(s.airstamp);
+      if (isNaN(date)) return false; // ignore invalid/future bad dates
+      return date >= sevenDaysAgo && date <= now;
     })
     // sort by most recent
     .sort((a, b) => new Date(b.airstamp) - new Date(a.airstamp));
