@@ -42,8 +42,8 @@ function cleanHTML(str) {
 }
 
 function pickStamp(ep) {
-  if (ep?.airstamp) return ep.airstamp;
-  if (ep?.airdate) return `${ep.airdate}T00:00:00Z`;
+  if (ep?.airdate) return ep.airdate;
+  if (ep?.airstamp) return ep.airstamp.slice(0, 10);
   return null;
 }
 
@@ -193,7 +193,7 @@ async function buildShows() {
     showMap.set(show.id, { show: detail, latestAirstamp: stamp });
   }
 
-  // -------- 3) FINAL LIST --------
+  // -------- 3) FINAL LIST WITH LAST 7 DAYS FILTER --------
   const now = new Date();
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(now.getDate() - 7);
@@ -201,21 +201,6 @@ async function buildShows() {
   const list = [...showMap.values()]
     .map((v) => {
       const s = v.show;
-
-      // Determine latest episode date using airdate first, then airstamp, truncated
-      let latestDate = null;
-      const eps = s._embedded?.episodes || [];
-      if (eps.length) {
-        latestDate = eps
-          .map((ep) => ep.airdate || (ep.airstamp ? ep.airstamp.slice(0, 10) : null))
-          .filter(Boolean)
-          .sort()
-          .pop();
-      }
-      if (!latestDate) {
-        latestDate = v.latestAirstamp ? v.latestAirstamp.slice(0, 10) : null;
-      }
-
       return {
         id: `tvmaze:${s.id}`,
         type: "series",
@@ -223,16 +208,14 @@ async function buildShows() {
         description: cleanHTML(s.summary),
         poster: s.image?.medium || s.image?.original || null,
         background: s.image?.original || null,
-        latestDate,
+        latestDate: v.latestAirstamp ? v.latestAirstamp.slice(0, 10) : null,
       };
     })
-    // Keep only shows with latestDate in last 7 days
     .filter((s) => {
       if (!s.latestDate) return false;
       const d = new Date(s.latestDate);
       return d >= sevenDaysAgo && d <= now;
     })
-    // Sort by most recent
     .sort((a, b) => new Date(b.latestDate) - new Date(a.latestDate));
 
   return list;
