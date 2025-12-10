@@ -27,24 +27,20 @@ async function fetchJSON(url) {
   }
 }
 
-function last7Dates() {
-  const out = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    out.push(d.toISOString().slice(0, 10));
-  }
-  return out;
+// Convert any Date or ISO string to YYYY-MM-DD (UTC)
+function getYMD(date) {
+  const d = new Date(date);
+  return d.toISOString().slice(0, 10);
 }
 
 function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
 
-// pickStamp: use airdate first, fallback to airstamp
+// pickStamp: prefer airdate, fallback to airstamp
 function pickStamp(ep) {
   if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
-  if (ep?.airstamp) return ep.airstamp.slice(0, 10);
+  if (ep?.airstamp) return getYMD(ep.airstamp);
   return null;
 }
 
@@ -136,9 +132,15 @@ async function tmdbToTvmazeShows(list) {
 // BUILD SHOWS (MAIN FUNCTION)
 // ==========================
 async function buildShows() {
-  const dates = last7Dates();
-  const startDate = dates[dates.length - 1];
-  const endDate = dates[0];
+  const dates = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    dates.push(getYMD(d));
+  }
+
+  const startDateStr = dates[dates.length - 1]; // 7 days ago
+  const todayStr = dates[0]; // today
 
   const showMap = new Map();
 
@@ -165,6 +167,7 @@ async function buildShows() {
         if (!cur) {
           showMap.set(show.id, { show, episodes: [stamp] });
         } else {
+          // merge episodes instead of skipping
           cur.episodes.push(stamp);
         }
       }
@@ -172,7 +175,7 @@ async function buildShows() {
   }
 
   // -------- 2) TMDB → TVMaze fallback --------
-  const tmdbList = await fetchTMDBDiscover(startDate, endDate);
+  const tmdbList = await fetchTMDBDiscover(startDateStr, todayStr);
   const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
 
   for (const entry of tmdbMapped) {
@@ -182,31 +185,30 @@ async function buildShows() {
     if (isForeign(show)) continue;
     if (isNews(show)) continue;
 
-    if (!showMap.has(show.id)) {
-      const detail = await fetchJSON(
-        `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
-      );
-      const eps = detail?._embedded?.episodes || [];
-      const stamps = eps.map(pickStamp).filter(Boolean);
-      if (stamps.length > 0) {
+    const detail = await fetchJSON(
+      `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
+    );
+    const eps = detail?._embedded?.episodes || [];
+    const stamps = eps.map(pickStamp).filter(Boolean);
+
+    if (stamps.length > 0) {
+      const cur = showMap.get(show.id);
+      if (!cur) {
         showMap.set(show.id, { show: detail, episodes: stamps });
+      } else {
+        // merge episodes
+        cur.episodes.push(...stamps);
       }
     }
   }
 
-  // -------- 3) FINAL LIST WITH LAST 7 DAYS FILTER (AIRDATE PRIORITY) --------
-  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
-  const sevenDaysAgo = new Date();
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const startDateStr = sevenDaysAgo.toLocaleDateString('en-CA');
-
+  // -------- 3) FINAL LIST FILTERED LAST 7 DAYS --------
   const list = [...showMap.values()]
     .map((v) => {
-      // Keep show if any episode is in the last 7 days
       const recentEpisodes = v.episodes.filter((d) => d >= startDateStr && d <= todayStr);
       if (recentEpisodes.length === 0) return null;
 
-      const latest = recentEpisodes.sort().reverse()[0]; // latest episode date
+      const latest = recentEpisodes.sort().reverse()[0];
       return {
         id: `tvmaze:${v.show.id}`,
         type: "series",
@@ -237,7 +239,7 @@ export default async function handler(req) {
           id: "tvmaze-last7-addon",
           version: "1.0.0",
           name: "TVMaze – Last 7 Days",
-          description: "English shows aired in last 7 days. No true news. Game/reality included.",
+          description: "English shows aired in last 7 days. No news. Includes reality/game shows.",
           catalogs: [
             { type: "series", id: "tvmaze_last7", name: "TVMaze Last 7 Days" },
           ],
