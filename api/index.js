@@ -42,7 +42,6 @@ function cleanHTML(str) {
 }
 
 function pickStamp(ep) {
-  // Return airstamp if available, otherwise use airdate at midnight UTC
   if (ep?.airstamp) return ep.airstamp;
   if (ep?.airdate) return `${ep.airdate}T00:00:00Z`;
   return null;
@@ -64,13 +63,11 @@ function isForeign(show) {
   return false;
 }
 
-// N1 filtering: remove shows with type News or Talk Show
 function isNews(show) {
   const t = (show.type || "").toLowerCase();
   return t === "news" || t === "talk show";
 }
 
-// Small concurrency helper
 async function pMap(list, fn, concurrency) {
   const out = [];
   let i = 0;
@@ -180,7 +177,6 @@ async function buildShows() {
     if (isForeign(show)) continue;
     if (isNews(show)) continue;
 
-    // If schedule already found it, skip
     if (showMap.has(show.id)) continue;
 
     const detail = await fetchJSON(
@@ -205,6 +201,21 @@ async function buildShows() {
   const list = [...showMap.values()]
     .map((v) => {
       const s = v.show;
+
+      // Determine latest episode date using airdate first, then airstamp, truncated
+      let latestDate = null;
+      const eps = s._embedded?.episodes || [];
+      if (eps.length) {
+        latestDate = eps
+          .map((ep) => ep.airdate || (ep.airstamp ? ep.airstamp.slice(0, 10) : null))
+          .filter(Boolean)
+          .sort()
+          .pop();
+      }
+      if (!latestDate) {
+        latestDate = v.latestAirstamp ? v.latestAirstamp.slice(0, 10) : null;
+      }
+
       return {
         id: `tvmaze:${s.id}`,
         type: "series",
@@ -212,18 +223,17 @@ async function buildShows() {
         description: cleanHTML(s.summary),
         poster: s.image?.medium || s.image?.original || null,
         background: s.image?.original || null,
-        airstamp: v.latestAirstamp,
+        latestDate,
       };
     })
-    // filter shows with airdate/airstamp in last 7 days and valid date
+    // Keep only shows with latestDate in last 7 days
     .filter((s) => {
-      if (!s.airstamp) return false;
-      const date = new Date(s.airstamp);
-      if (isNaN(date)) return false; // ignore invalid/future bad dates
-      return date >= sevenDaysAgo && date <= now;
+      if (!s.latestDate) return false;
+      const d = new Date(s.latestDate);
+      return d >= sevenDaysAgo && d <= now;
     })
-    // sort by most recent
-    .sort((a, b) => new Date(b.airstamp) - new Date(a.airstamp));
+    // Sort by most recent
+    .sort((a, b) => new Date(b.latestDate) - new Date(a.latestDate));
 
   return list;
 }
