@@ -41,9 +41,10 @@ function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
 
+// pickStamp: prefer airstamp, fallback to airdate, truncated
 function pickStamp(ep) {
-  if (ep?.airdate) return ep.airdate;
   if (ep?.airstamp) return ep.airstamp.slice(0, 10);
+  if (ep?.airdate) return ep.airdate;
   return null;
 }
 
@@ -63,9 +64,10 @@ function isForeign(show) {
   return false;
 }
 
+// Only exclude actual news shows, keep game/reality/talk shows
 function isNews(show) {
   const t = (show.type || "").toLowerCase();
-  return t === "news" || t === "talk show";
+  return t === "news";
 }
 
 async function pMap(list, fn, concurrency) {
@@ -198,7 +200,7 @@ async function buildShows() {
 
   const list = [...showMap.values()]
     .map((v) => {
-      // Find latest episode within the last 7 days
+      // Keep show if **any episode is in the last 7 days**
       const recentEpisodes = v.episodes
         .map((d) => new Date(d))
         .filter((d) => d >= sevenDaysAgo && d <= now);
@@ -235,7 +237,7 @@ export default async function handler(req) {
           id: "tvmaze-last7-addon",
           version: "1.0.0",
           name: "TVMaze – Last 7 Days",
-          description: "English shows aired in last 7 days. No news, talk, foreign.",
+          description: "English shows aired in last 7 days. No news. Includes game/reality shows.",
           catalogs: [
             { type: "series", id: "tvmaze_last7", name: "TVMaze Last 7 Days" },
           ],
