@@ -31,9 +31,10 @@ function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
 
+// Pick airdate first, fallback airstamp, return YYYY-MM-DD
 function pickDate(ep) {
   if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
-  if (ep?.airstamp) return ep.airstamp.slice(0,10);
+  if (ep?.airstamp) return ep.airstamp.slice(0, 10);
   return null;
 }
 
@@ -71,12 +72,10 @@ async function pMap(list, fn, concurrency) {
 // ==========================
 // TMDB → TVMaze
 // ==========================
-async function fetchTMDBDiscover(startDate, endDate) {
+async function fetchTMDBDiscoverPages(pages = MAX_TMDB_PAGES) {
   const results = [];
-  for (let page = 1; page <= MAX_TMDB_PAGES; page++) {
-    const url = `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
-                `&air_date.gte=${startDate}&air_date.lte=${endDate}` +
-                `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
+  for (let page = 1; page <= pages; page++) {
+    const url = `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}&sort_by=first_air_date.desc&language=en-US&page=${page}`;
     const json = await fetchJSON(url);
     if (!json?.results?.length) break;
     results.push(...json.results);
@@ -97,17 +96,16 @@ async function tmdbToTvmazeShows(list) {
 }
 
 // ==========================
-// LAST 10 DAYS (Option 2)
+// FILTER LAST N DAYS
 // ==========================
-function filterLastNDaysIncludeFuture(episodes, n = 10) {
-  const now = new Date();
-  const nDaysAgo = new Date(now);
-  nDaysAgo.setDate(now.getDate() - (n - 1)); // include today
+function filterLastNDays(episodes, n = 10, nowDate) {
+  const nDaysAgo = new Date(nowDate);
+  nDaysAgo.setDate(nowDate.getDate() - (n - 1));
   return episodes.filter(ep => {
     const dateStr = pickDate(ep);
     if (!dateStr) return false;
     const epDate = new Date(dateStr);
-    return epDate >= nDaysAgo && epDate <= now; // allow slight future UTC airstamps
+    return epDate >= nDaysAgo && epDate <= nowDate;
   });
 }
 
@@ -115,15 +113,18 @@ function filterLastNDaysIncludeFuture(episodes, n = 10) {
 // BUILD SHOWS
 // ==========================
 async function buildShows() {
-  const showMap = new Map();
+  // Treat “today” as yesterday for UTC alignment
   const now = new Date();
+  now.setDate(now.getDate() - 1);
 
-  // -------- 1) TVMaze SCHEDULES --------
-  for (let i = 0; i < 10; i++) { // 10 days
+  const showMap = new Map();
+
+  // 1) TVMaze schedules last 10 days
+  for (let i = 0; i < 10; i++) {
     const d = new Date(now);
     d.setDate(now.getDate() - i);
     const yyyy = d.getFullYear();
-    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const mm = String(d.getMonth() + 1).padStart(2,'0');
     const dd = String(d.getDate()).padStart(2,'0');
     const dateStr = `${yyyy}-${mm}-${dd}`;
 
@@ -145,13 +146,8 @@ async function buildShows() {
     }
   }
 
-  // -------- 2) TMDB → TVMaze fallback --------
-  const startDate = new Date(now);
-  startDate.setDate(now.getDate() - 9); // 10 days total
-  const startStr = `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,'0')}-${String(startDate.getDate()).padStart(2,'0')}`;
-  const endStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
-
-  const tmdbList = await fetchTMDBDiscover(startStr, endStr);
+  // 2) TMDB fallback (no date filter yet)
+  const tmdbList = await fetchTMDBDiscoverPages();
   const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
 
   for (const entry of tmdbMapped) {
@@ -162,17 +158,17 @@ async function buildShows() {
 
     const detail = await fetchJSON(`https://api.tvmaze.com/shows/${show.id}?embed=episodes`);
     const eps = detail?._embedded?.episodes || [];
-    if (eps.length === 0) continue;
+    if (!eps.length) continue;
     const cur = showMap.get(show.id);
     if (!cur) showMap.set(show.id, { show: detail, episodes: eps });
     else cur.episodes.push(...eps);
   }
 
-  // -------- 3) FILTER LAST 10 DAYS --------
+  // 3) Filter episodes for last 10 days
   const list = [...showMap.values()]
     .map(v => {
-      const recentEps = filterLastNDaysIncludeFuture(v.episodes, 10);
-      if (recentEps.length === 0) return null;
+      const recentEps = filterLastNDays(v.episodes, 10, now);
+      if (!recentEps.length) return null;
       const latestDate = recentEps.map(pickDate).sort().reverse()[0];
       return {
         id: `tvmaze:${v.show.id}`,
@@ -199,18 +195,18 @@ export default async function handler(req) {
 
   if (p === "/manifest.json") {
     return new Response(JSON.stringify({
-      id: "tvmaze-last10-addon",
+      id: "tvmaze-weekly-schedule",
       version: "1.0.0",
-      name: "TVMaze – Last 10 Days",
-      description: "English shows aired in last 10 days. No news. Includes reality/game shows.",
-      catalogs: [{ type: "series", id: "tvmaze_last10", name: "TVMaze Last 10 Days" }],
+      name: "Weekly Schedule",
+      description: "English shows aired in the last 10 days. No news. Includes reality/game shows.",
+      catalogs: [{ type: "series", id: "tvmaze_weekly_schedule", name: "Weekly Schedule" }],
       resources: ["catalog","meta"],
       types: ["series"],
       idPrefixes: ["tvmaze"]
     }, null, 2), { headers: CORS });
   }
 
-  if (p.startsWith("/catalog/series/tvmaze_last10.json")) {
+  if (p.startsWith("/catalog/series/tvmaze_weekly_schedule.json")) {
     const shows = await buildShows();
     return new Response(JSON.stringify({ metas: shows }, null, 2), { headers: CORS });
   }
