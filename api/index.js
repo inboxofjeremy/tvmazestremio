@@ -27,26 +27,31 @@ async function fetchJSON(url) {
   }
 }
 
-// Convert any Date or ISO string to YYYY-MM-DD UTC
-function getYMDUTC(date) {
-  const d = new Date(date);
-  return d.getUTCFullYear() + '-' +
-         String(d.getUTCMonth() + 1).padStart(2,'0') + '-' +
-         String(d.getUTCDate()).padStart(2,'0');
+// Generate last 7 days as YYYY-MM-DD strings (date-only)
+function last7Dates() {
+  const out = [];
+  const today = new Date();
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    out.push(d.toISOString().slice(0,10)); // YYYY-MM-DD
+  }
+  return out;
 }
 
+// Clean HTML tags from summaries
 function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
 
-// pickStamp: prefer airdate, fallback to airstamp
-function pickStamp(ep) {
+// Pick episode date (airdate preferred, fallback to airstamp)
+function pickDate(ep) {
   if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
-  if (ep?.airstamp) return getYMDUTC(ep.airstamp);
+  if (ep?.airstamp) return ep.airstamp.slice(0,10); // truncate to YYYY-MM-DD
   return null;
 }
 
-// Treat missing language as English
+// Foreign language detection
 function isForeign(show) {
   const lang = (show.language || "english").toLowerCase();
   const name = show.name || "";
@@ -63,12 +68,13 @@ function isForeign(show) {
   return false;
 }
 
-// Only exclude actual news shows
+// Exclude news shows
 function isNews(show) {
   const t = (show.type || "").toLowerCase();
   return t === "news";
 }
 
+// Concurrency helper
 async function pMap(list, fn, concurrency) {
   const out = [];
   let i = 0;
@@ -134,20 +140,13 @@ async function tmdbToTvmazeShows(list) {
 // BUILD SHOWS (MAIN FUNCTION)
 // ==========================
 async function buildShows() {
-  // generate last 7 days in UTC
-  const today = new Date();
-  const dates = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - i));
-    dates.push(getYMDUTC(d));
-  }
-
-  const startDateStr = dates[dates.length - 1]; // 7 days ago
-  const todayStr = dates[0]; // today
+  const dates = last7Dates();
+  const startDate = dates[dates.length - 1]; // 7 days ago
+  const endDate = dates[0]; // today
 
   const showMap = new Map();
 
-  // -------- 1) TVMAZE SCHEDULES --------
+  // -------- 1) TVMaze SCHEDULES --------
   for (const d of dates) {
     const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${d}`);
     const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${d}`);
@@ -163,21 +162,21 @@ async function buildShows() {
         if (isForeign(show)) continue;
         if (isNews(show)) continue;
 
-        const stamp = pickStamp(ep);
-        if (!stamp) continue;
+        const date = pickDate(ep);
+        if (!date) continue;
 
         const cur = showMap.get(show.id);
         if (!cur) {
-          showMap.set(show.id, { show, episodes: [stamp] });
+          showMap.set(show.id, { show, episodes: [date] });
         } else {
-          cur.episodes.push(stamp);
+          cur.episodes.push(date);
         }
       }
     }
   }
 
   // -------- 2) TMDB → TVMaze fallback --------
-  const tmdbList = await fetchTMDBDiscover(startDateStr, todayStr);
+  const tmdbList = await fetchTMDBDiscover(startDate, endDate);
   const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
 
   for (const entry of tmdbMapped) {
@@ -191,14 +190,14 @@ async function buildShows() {
       `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
     );
     const eps = detail?._embedded?.episodes || [];
-    const stamps = eps.map(pickStamp).filter(Boolean);
+    const datesArr = eps.map(pickDate).filter(Boolean);
 
-    if (stamps.length > 0) {
+    if (datesArr.length > 0) {
       const cur = showMap.get(show.id);
       if (!cur) {
-        showMap.set(show.id, { show: detail, episodes: stamps });
+        showMap.set(show.id, { show: detail, episodes: datesArr });
       } else {
-        cur.episodes.push(...stamps); // always merge
+        cur.episodes.push(...datesArr);
       }
     }
   }
@@ -206,7 +205,7 @@ async function buildShows() {
   // -------- 3) FINAL LIST FILTERED LAST 7 DAYS --------
   const list = [...showMap.values()]
     .map((v) => {
-      const recentEpisodes = v.episodes.filter((d) => d >= startDateStr && d <= todayStr);
+      const recentEpisodes = v.episodes.filter(d => d >= startDate && d <= endDate);
       if (recentEpisodes.length === 0) return null;
 
       const latest = recentEpisodes.sort().reverse()[0];
@@ -221,7 +220,7 @@ async function buildShows() {
       };
     })
     .filter(Boolean)
-    .sort((a, b) => b.latestDate.localeCompare(a.latestDate));
+    .sort((a,b) => b.latestDate.localeCompare(a.latestDate));
 
   return list;
 }
@@ -235,22 +234,18 @@ export default async function handler(req) {
 
   if (p === "/manifest.json") {
     return new Response(
-      JSON.stringify(
-        {
-          id: "tvmaze-last7-addon",
-          version: "1.0.0",
-          name: "TVMaze – Last 7 Days",
-          description: "English shows aired in last 7 days. No news. Includes reality/game shows.",
-          catalogs: [
-            { type: "series", id: "tvmaze_last7", name: "TVMaze Last 7 Days" },
-          ],
-          resources: ["catalog", "meta"],
-          types: ["series"],
-          idPrefixes: ["tvmaze"],
-        },
-        null,
-        2
-      ),
+      JSON.stringify({
+        id: "tvmaze-last7-addon",
+        version: "1.0.0",
+        name: "TVMaze – Last 7 Days",
+        description: "English shows aired in last 7 days. No news. Includes reality/game shows.",
+        catalogs: [
+          { type: "series", id: "tvmaze_last7", name: "TVMaze Last 7 Days" },
+        ],
+        resources: ["catalog", "meta"],
+        types: ["series"],
+        idPrefixes: ["tvmaze"],
+      }, null, 2),
       { headers: CORS }
     );
   }
@@ -287,21 +282,17 @@ export default async function handler(req) {
     }));
 
     return new Response(
-      JSON.stringify(
-        {
-          meta: {
-            id: `tvmaze:${show.id}`,
-            type: "series",
-            name: show.name,
-            description: cleanHTML(show.summary),
-            poster: show.image?.original || show.image?.medium || null,
-            background: show.image?.original || null,
-            videos: eps,
-          },
+      JSON.stringify({
+        meta: {
+          id: `tvmaze:${show.id}`,
+          type: "series",
+          name: show.name,
+          description: cleanHTML(show.summary),
+          poster: show.image?.original || show.image?.medium || null,
+          background: show.image?.original || null,
+          videos: eps,
         },
-        null,
-        2
-      ),
+      }, null, 2),
       { headers: CORS }
     );
   }
