@@ -51,9 +51,10 @@ function isForeign(show) {
   return false;
 }
 
+// Updated to exclude both News and Talk Show
 function isNews(show) {
   const t = (show.type || "").toLowerCase();
-  return t === "news";
+  return t === "news" || t === "talk show";
 }
 
 async function pMap(list, fn, concurrency) {
@@ -198,7 +199,7 @@ export default async function handler(req) {
       id: "tvmaze-weekly-schedule",
       version: "1.0.0",
       name: "Weekly Schedule",
-      description: "English shows aired in the last 10 days. No news. Includes reality/game shows.",
+      description: "English shows aired in the last 10 days. No news or talk shows. Includes reality/game shows.",
       catalogs: [{ type: "series", id: "tvmaze_weekly_schedule", name: "Weekly Schedule" }],
       resources: ["catalog","meta"],
       types: ["series"],
