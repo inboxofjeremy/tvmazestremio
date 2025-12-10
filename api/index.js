@@ -41,10 +41,10 @@ function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
 
-// pickStamp: prefer airstamp, fallback to airdate; ignore invalid dates
+// pickStamp: use airdate first, fallback to airstamp
 function pickStamp(ep) {
-  if (ep?.airstamp) return ep.airstamp.slice(0, 10);
   if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
+  if (ep?.airstamp) return ep.airstamp.slice(0, 10);
   return null;
 }
 
@@ -194,17 +194,16 @@ async function buildShows() {
     }
   }
 
-  // -------- 3) FINAL LIST WITH LAST 7 DAYS FILTER (STRING-BASED) --------
-  const today = new Date().toISOString().slice(0, 10);
+  // -------- 3) FINAL LIST WITH LAST 7 DAYS FILTER (AIRDATE PRIORITY) --------
+  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const startDateStr = sevenDaysAgo.toISOString().slice(0, 10);
+  const startDateStr = sevenDaysAgo.toLocaleDateString('en-CA');
 
   const list = [...showMap.values()]
     .map((v) => {
       // Keep show if any episode is in the last 7 days
-      const recentEpisodes = v.episodes
-        .filter((d) => d >= startDateStr && d <= today);
+      const recentEpisodes = v.episodes.filter((d) => d >= startDateStr && d <= todayStr);
       if (recentEpisodes.length === 0) return null;
 
       const latest = recentEpisodes.sort().reverse()[0]; // latest episode date
