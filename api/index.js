@@ -31,7 +31,7 @@ function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
 
-// Pick airdate first, fallback airstamp, return YYYY-MM-DD
+// Pick airdate first, fallback to airstamp, return YYYY-MM-DD
 function pickDate(ep) {
   if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
   if (ep?.airstamp) return ep.airstamp.slice(0, 10);
@@ -41,17 +41,20 @@ function pickDate(ep) {
 function isForeign(show) {
   const lang = (show.language || "english").toLowerCase();
   const name = show.name || "";
-  if (lang && lang !== "english") return true;
-  if (/[\u4E00-\u9FFF\u3040-\u30FF\u31F0-\u31FF]/.test(name)) return true;
-  if (/[\u0400-\u04FF]/.test(name)) return true;
-  if (/[\u0E00-\u0E7F]/.test(name)) return true;
-  if (/[\u0600-\u06FF]/.test(name)) return true;
-  if (/[\u0900-\u097F]/.test(name)) return true;
-  if (/[\uAC00-\uD7AF]/.test(name)) return true;
+
+  if (lang !== "english") return true;
+
+  if (/[\u4E00-\u9FFF\u3040-\u30FF\u31F0-\u31FF]/.test(name)) return true; // CJK
+  if (/[\u0400-\u04FF]/.test(name)) return true; // Cyrillic
+  if (/[\u0E00-\u0E7F]/.test(name)) return true; // Thai
+  if (/[\u0600-\u06FF]/.test(name)) return true; // Arabic
+  if (/[\u0900-\u097F]/.test(name)) return true; // Hindi
+  if (/[\uAC00-\uD7AF]/.test(name)) return true; // Korean
+
   return false;
 }
 
-// Updated to exclude both News and Talk Show
+// BLOCK: News and Talk Show
 function isNews(show) {
   const t = (show.type || "").toLowerCase();
   return t === "news" || t === "talk show";
@@ -60,25 +63,35 @@ function isNews(show) {
 async function pMap(list, fn, concurrency) {
   const out = [];
   let i = 0;
+
   const workers = Array(concurrency).fill(0).map(async () => {
     while (i < list.length) {
       const idx = i++;
-      try { out[idx] = await fn(list[idx], idx); } catch { out[idx] = null; }
+      try {
+        out[idx] = await fn(list[idx], idx);
+      } catch {
+        out[idx] = null;
+      }
     }
   });
+
   await Promise.all(workers);
   return out;
 }
 
 // ==========================
-// TMDB → TVMaze
+// TMDB → IMDB → TVMaze
 // ==========================
 async function fetchTMDBDiscoverPages(pages = MAX_TMDB_PAGES) {
   const results = [];
   for (let page = 1; page <= pages; page++) {
-    const url = `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}&sort_by=first_air_date.desc&language=en-US&page=${page}`;
+    const url =
+      `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
+      `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
+
     const json = await fetchJSON(url);
     if (!json?.results?.length) break;
+
     results.push(...json.results);
     if (page >= json.total_pages) break;
   }
@@ -86,27 +99,48 @@ async function fetchTMDBDiscoverPages(pages = MAX_TMDB_PAGES) {
 }
 
 async function tmdbToTvmazeShows(list) {
-  return (await pMap(list, async (item) => {
-    if (!item?.id) return null;
-    const ext = await fetchJSON(`https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`);
-    if (!ext?.imdb_id) return null;
-    const tm = await fetchJSON(`https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(ext.imdb_id)}`);
-    if (!tm?.id) return null;
-    return { tvmaze: tm, tmdb: item };
-  }, TMDB_CONCURRENCY)).filter(Boolean);
+  return (
+    await pMap(
+      list,
+      async (item) => {
+        if (!item?.id) return null;
+
+        const ext = await fetchJSON(
+          `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
+        );
+        if (!ext?.imdb_id) return null;
+
+        const tm = await fetchJSON(
+          `https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(
+            ext.imdb_id
+          )}`
+        );
+        if (!tm?.id) return null;
+
+        return { tvmaze: tm, tmdb: item };
+      },
+      TMDB_CONCURRENCY
+    )
+  ).filter(Boolean);
 }
 
 // ==========================
 // FILTER LAST N DAYS
 // ==========================
-function filterLastNDays(episodes, n = 10, nowDate) {
-  const nDaysAgo = new Date(nowDate);
-  nDaysAgo.setDate(nowDate.getDate() - (n - 1));
-  return episodes.filter(ep => {
+function filterLastNDays(episodes, n, todayStr) {
+  const today = new Date(todayStr);
+  const start = new Date(todayStr);
+  start.setDate(start.getDate() - (n - 1));
+
+  return episodes.filter((ep) => {
     const dateStr = pickDate(ep);
     if (!dateStr) return false;
-    const epDate = new Date(dateStr);
-    return epDate >= nDaysAgo && epDate <= nowDate;
+
+    // Block future episodes
+    if (dateStr > todayStr) return false;
+
+    const d = new Date(dateStr);
+    return d >= start && d <= today;
   });
 }
 
@@ -114,32 +148,43 @@ function filterLastNDays(episodes, n = 10, nowDate) {
 // BUILD SHOWS
 // ==========================
 async function buildShows() {
-  // Treat “today” as yesterday for UTC alignment
+  // Use TODAY in UTC
   const now = new Date();
-  now.setDate(now.getDate() - 1);
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  const todayStr = `${yyyy}-${mm}-${dd}`;
 
   const showMap = new Map();
 
-  // 1) TVMaze schedules last 10 days
+  // --- 1) TVMaze schedules: last 10 days ---
   for (let i = 0; i < 10; i++) {
-    const d = new Date(now);
-    d.setDate(now.getDate() - i);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2,'0');
-    const dd = String(d.getDate()).padStart(2,'0');
-    const dateStr = `${yyyy}-${mm}-${dd}`;
+    const d = new Date(todayStr);
+    d.setDate(d.getDate() - i);
 
-    const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${dateStr}`);
-    const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${dateStr}`);
-    const c = await fetchJSON(`https://api.tvmaze.com/schedule/full?date=${dateStr}`);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const dateStr = `${y}-${m}-${day}`;
 
-    for (const list of [a,b,c]) {
+    const a = await fetchJSON(
+      `https://api.tvmaze.com/schedule?country=US&date=${dateStr}`
+    );
+    const b = await fetchJSON(
+      `https://api.tvmaze.com/schedule/web?date=${dateStr}`
+    );
+    const c = await fetchJSON(
+      `https://api.tvmaze.com/schedule/full?date=${dateStr}`
+    );
+
+    for (const list of [a, b, c]) {
       if (!Array.isArray(list)) continue;
       for (const ep of list) {
         const show = ep?.show || ep?._embedded?.show;
         if (!show?.id) continue;
         if (isForeign(show)) continue;
         if (isNews(show)) continue;
+
         const cur = showMap.get(show.id);
         if (!cur) showMap.set(show.id, { show, episodes: [ep] });
         else cur.episodes.push(ep);
@@ -147,7 +192,7 @@ async function buildShows() {
     }
   }
 
-  // 2) TMDB fallback (no date filter yet)
+  // --- 2) TMDB fallback ---
   const tmdbList = await fetchTMDBDiscoverPages();
   const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
 
@@ -157,20 +202,29 @@ async function buildShows() {
     if (isForeign(show)) continue;
     if (isNews(show)) continue;
 
-    const detail = await fetchJSON(`https://api.tvmaze.com/shows/${show.id}?embed=episodes`);
+    const detail = await fetchJSON(
+      `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
+    );
     const eps = detail?._embedded?.episodes || [];
     if (!eps.length) continue;
+
     const cur = showMap.get(show.id);
     if (!cur) showMap.set(show.id, { show: detail, episodes: eps });
     else cur.episodes.push(...eps);
   }
 
-  // 3) Filter episodes for last 10 days
+  // --- 3) FINAL FILTER + SORT ---
   const list = [...showMap.values()]
-    .map(v => {
-      const recentEps = filterLastNDays(v.episodes, 10, now);
-      if (!recentEps.length) return null;
-      const latestDate = recentEps.map(pickDate).sort().reverse()[0];
+    .map((v) => {
+      const recent = filterLastNDays(v.episodes, 10, todayStr);
+      if (!recent.length) return null;
+
+      const latestDate = recent
+        .map((e) => pickDate(e))
+        .filter(Boolean)
+        .sort()
+        .reverse()[0];
+
       return {
         id: `tvmaze:${v.show.id}`,
         type: "series",
@@ -178,11 +232,11 @@ async function buildShows() {
         description: cleanHTML(v.show.summary),
         poster: v.show.image?.medium || v.show.image?.original || null,
         background: v.show.image?.original || null,
-        latestDate
+        latestDate,
       };
     })
     .filter(Boolean)
-    .sort((a,b) => b.latestDate.localeCompare(a.latestDate));
+    .sort((a, b) => b.latestDate.localeCompare(a.latestDate));
 
   return list;
 }
@@ -195,47 +249,83 @@ export default async function handler(req) {
   const p = u.pathname;
 
   if (p === "/manifest.json") {
-    return new Response(JSON.stringify({
-      id: "tvmaze-weekly-schedule",
-      version: "1.0.0",
-      name: "Weekly Schedule",
-      description: "English shows aired in the last 10 days. No news or talk shows. Includes reality/game shows.",
-      catalogs: [{ type: "series", id: "tvmaze_weekly_schedule", name: "Weekly Schedule" }],
-      resources: ["catalog","meta"],
-      types: ["series"],
-      idPrefixes: ["tvmaze"]
-    }, null, 2), { headers: CORS });
+    return new Response(
+      JSON.stringify(
+        {
+          id: "tvmaze-weekly-schedule",
+          version: "1.0.0",
+          name: "Weekly Schedule",
+          description:
+            "English shows aired in the last 10 days. No news or talk shows. Includes reality/game shows.",
+          catalogs: [
+            {
+              type: "series",
+              id: "tvmaze_weekly_schedule",
+              name: "Weekly Schedule",
+            },
+          ],
+          resources: ["catalog", "meta"],
+          types: ["series"],
+          idPrefixes: ["tvmaze"],
+        },
+        null,
+        2
+      ),
+      { headers: CORS }
+    );
   }
 
   if (p.startsWith("/catalog/series/tvmaze_weekly_schedule.json")) {
     const shows = await buildShows();
-    return new Response(JSON.stringify({ metas: shows }, null, 2), { headers: CORS });
+    return new Response(JSON.stringify({ metas: shows }, null, 2), {
+      headers: CORS,
+    });
   }
 
   if (p.startsWith("/meta/series/")) {
-    const id = p.split("/").pop().replace(".json","");
-    const showId = id.replace("tvmaze:","");
-    const show = await fetchJSON(`https://api.tvmaze.com/shows/${showId}?embed=episodes`);
-    if (!show) return new Response(JSON.stringify({ meta: { id, type:"series", name:"Unknown", videos:[] }}), { headers: CORS });
-    const eps = (show._embedded?.episodes || []).map(ep => ({
+    const id = p.split("/").pop().replace(".json", "");
+    const showId = id.replace("tvmaze:", "");
+
+    const show = await fetchJSON(
+      `https://api.tvmaze.com/shows/${showId}?embed=episodes`
+    );
+
+    if (!show) {
+      return new Response(
+        JSON.stringify({
+          meta: { id, type: "series", name: "Unknown", videos: [] },
+        }),
+        { headers: CORS }
+      );
+    }
+
+    const eps = (show._embedded?.episodes || []).map((ep) => ({
       id: `tvmaze:${ep.id}`,
       title: ep.name || `Episode ${ep.number}`,
       season: ep.season,
       episode: ep.number,
       released: ep.airdate || null,
-      overview: cleanHTML(ep.summary)
+      overview: cleanHTML(ep.summary),
     }));
-    return new Response(JSON.stringify({
-      meta: {
-        id: `tvmaze:${show.id}`,
-        type: "series",
-        name: show.name,
-        description: cleanHTML(show.summary),
-        poster: show.image?.original || show.image?.medium || null,
-        background: show.image?.original || null,
-        videos: eps
-      }
-    }, null, 2), { headers: CORS });
+
+    return new Response(
+      JSON.stringify(
+        {
+          meta: {
+            id: `tvmaze:${show.id}`,
+            type: "series",
+            name: show.name,
+            description: cleanHTML(show.summary),
+            poster: show.image?.original || show.image?.medium || null,
+            background: show.image?.original || null,
+            videos: eps,
+          },
+        },
+        null,
+        2
+      ),
+      { headers: CORS }
+    );
   }
 
   return new Response("Not found", { status: 404, headers: CORS });
