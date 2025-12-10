@@ -1,6 +1,5 @@
-export const config = {
-  runtime: "edge",
-};
+// api/index.js
+export const config = { runtime: "edge" };
 
 // CORS headers
 const CORS = {
@@ -9,12 +8,14 @@ const CORS = {
   "Content-Type": "application/json",
 };
 
+// Basic fetch wrapper
 async function getJSON(url) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) return [];
   return res.json();
 }
 
+// Last 7 calendar dates
 function last7Dates() {
   const list = [];
   for (let i = 0; i < 7; i++) {
@@ -25,11 +26,13 @@ function last7Dates() {
   return list;
 }
 
+// Strip HTML summaries
 function cleanHTML(str) {
   if (!str) return "";
   return str.replace(/<[^>]+>/g, "").trim();
 }
 
+// Choose best airstamp
 function pickStamp(ep) {
   return (
     ep?.airstamp ||
@@ -37,41 +40,41 @@ function pickStamp(ep) {
   );
 }
 
-// REMOVE CHINESE / JAPANESE / KOREAN / RUSSIAN LANGUAGE SHOWS
-function isNonEnglishByScriptOrLang(show) {
+// 🔥 Remove Asian (CN/JP/KR/TW) + Russian + News
+function blockFiltered(show) {
   const lang = (show.language || "").toLowerCase();
   const name = (show.name || "").toLowerCase();
+  const genres = Array.isArray(show.genres) ? show.genres.map(g => g.toLowerCase()) : [];
 
-  if (["japanese", "korean", "mandarin", "chinese", "russian"].includes(lang))
-    return true;
+  // Remove news & talk-news
+  if (genres.includes("news") || genres.includes("talk")) return true;
 
-  if (name.match(/[\u0400-\u04FF]/)) return true; // Cyrillic
-  if (name.match(/[\u3040-\u30FF\u4E00-\u9FFF]/)) return true; // JP/CN/KR
+  // Remove Russian
+  if (lang.includes("russian")) return true;
+
+  // Remove Japanese
+  if (lang.includes("japanese")) return true;
+
+  // Remove Chinese
+  if (lang.includes("chinese") || name.match(/[\u4E00-\u9FFF]/)) return true;
+
+  // Remove Korean
+  if (lang.includes("korean") || name.match(/[\u3130-\u318F\uAC00-\uD7AF]/)) return true;
 
   return false;
 }
 
-// REMOVE NEWS SHOWS
-function isNews(show) {
-  const type = (show.type || "").toLowerCase();
-  const genres = (show.genres || []).map(g => g.toLowerCase());
-
-  if (type === "news") return true;
-  if (genres.includes("news")) return true;
-
-  return false;
-}
-
+// Fetch all shows from both endpoints
 async function fetchShows() {
   const dates = last7Dates();
   const map = new Map();
 
   for (const date of dates) {
-    const urlA = `https://api.tvmaze.com/schedule?country=US&date=${date}&embed=show`;
-    const urlB = `https://api.tvmaze.com/schedule/web?date=${date}&embed=show`;
+    const urlNormal = `https://api.tvmaze.com/schedule?country=US&date=${date}&embed=show`;
+    const urlWeb = `https://api.tvmaze.com/schedule/web?date=${date}&embed=show`;
 
-    const normal = await getJSON(urlA);
-    const web = await getJSON(urlB);
+    const normal = await getJSON(urlNormal);
+    const web = await getJSON(urlWeb);
 
     const all = []
       .concat(Array.isArray(normal) ? normal : [])
@@ -81,9 +84,8 @@ async function fetchShows() {
       const show = ep?._embedded?.show;
       if (!show?.id) continue;
 
-      // EXCLUDE NON-ENGLISH & NEWS SHOWS
-      if (isNonEnglishByScriptOrLang(show)) continue;
-      if (isNews(show)) continue;
+      // Skip news / CN / JP / KR / RU / TW shows
+      if (blockFiltered(show)) continue;
 
       const stamp = pickStamp(ep);
       const existing = map.get(show.id);
@@ -114,12 +116,7 @@ async function fetchMeta(showId) {
 
   if (!show?.id) {
     return {
-      meta: {
-        id: showId,
-        type: "series",
-        name: "Unknown Show",
-        videos: [],
-      },
+      meta: { id: showId, type: "series", name: "Unknown Show", videos: [] },
     };
   }
 
@@ -148,18 +145,17 @@ async function fetchMeta(showId) {
 // MAIN HANDLER
 export default async function handler(req) {
   const url = new URL(req.url);
-  const pathname = url.pathname;
+  const path = url.pathname;
 
   // MANIFEST
-  if (pathname === "/manifest.json") {
+  if (path === "/manifest.json") {
     return new Response(
       JSON.stringify(
         {
           id: "tvmaze-last7-addon",
           version: "1.0.0",
           name: "TVMaze – Last 7 Days",
-          description:
-            "Lists last-7-day US English-language shows (Schedule + Web Schedule).",
+          description: "English-language US shows aired in the last 7 days.",
           catalogs: [
             {
               type: "series",
@@ -180,7 +176,7 @@ export default async function handler(req) {
   }
 
   // CATALOG
-  if (pathname.startsWith("/catalog/series/tvmaze_last7.json")) {
+  if (path.startsWith("/catalog/series/tvmaze_last7.json")) {
     const shows = await fetchShows();
     return new Response(JSON.stringify({ metas: shows }, null, 2), {
       headers: CORS,
@@ -188,8 +184,8 @@ export default async function handler(req) {
   }
 
   // META
-  if (pathname.startsWith("/meta/series/")) {
-    const id = pathname.split("/")[3].replace(".json", "");
+  if (path.startsWith("/meta/series/")) {
+    const id = path.split("/")[3].replace(".json", "");
     const meta = await fetchMeta(id);
     return new Response(JSON.stringify(meta, null, 2), {
       headers: CORS,
