@@ -27,22 +27,25 @@ async function fetchJSON(url) {
   }
 }
 
-// Generate last 7 days manually, YYYY-MM-DD, no ISO conversion
-function last7Dates() {
-  const today = new Date();
+// Generate last 7 dates in US Eastern Time (TVMaze schedule aligned)
+function last7DatesUS() {
   const out = [];
+  const now = new Date();
+  // Simple ET offset: UTC-5
+  const tzOffset = now.getTimezoneOffset() * 60000; // minutes → ms
+  const nowET = new Date(now.getTime() - tzOffset - 5*60*60*1000); // UTC-5
   for (let i = 0; i < 7; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
+    const d = new Date(nowET);
+    d.setDate(nowET.getDate() - i);
     const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
     out.push(`${yyyy}-${mm}-${dd}`);
   }
   return out;
 }
 
-// Clean HTML tags from summaries
+// Clean HTML tags
 function cleanHTML(str) {
   return str ? str.replace(/<[^>]+>/g, "").trim() : "";
 }
@@ -59,12 +62,12 @@ function isForeign(show) {
   const lang = (show.language || "english").toLowerCase();
   const name = show.name || "";
   if (lang && lang !== "english") return true;
-  if (/[\u4E00-\u9FFF\u3040-\u30FF\u31F0-\u31FF]/.test(name)) return true; // CJK
-  if (/[\u0400-\u04FF]/.test(name)) return true; // Cyrillic
-  if (/[\u0E00-\u0E7F]/.test(name)) return true; // Thai
-  if (/[\u0600-\u06FF]/.test(name)) return true; // Arabic
-  if (/[\u0900-\u097F]/.test(name)) return true; // Hindi
-  if (/[\uAC00-\uD7AF]/.test(name)) return true; // Hangul
+  if (/[\u4E00-\u9FFF\u3040-\u30FF\u31F0-\u31FF]/.test(name)) return true;
+  if (/[\u0400-\u04FF]/.test(name)) return true;
+  if (/[\u0E00-\u0E7F]/.test(name)) return true;
+  if (/[\u0600-\u06FF]/.test(name)) return true;
+  if (/[\u0900-\u097F]/.test(name)) return true;
+  if (/[\uAC00-\uD7AF]/.test(name)) return true;
   return false;
 }
 
@@ -120,7 +123,7 @@ async function tmdbToTvmazeShows(list) {
 // BUILD SHOWS (MAIN FUNCTION)
 // ==========================
 async function buildShows() {
-  const dates = last7Dates();
+  const dates = last7DatesUS();
   const startDate = dates[dates.length - 1]; // 7 days ago
   const endDate = dates[0]; // today
 
