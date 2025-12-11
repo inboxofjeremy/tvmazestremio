@@ -114,60 +114,53 @@ return out;
 // TMDB LOOKUP
 // ==========================
 async function fetchTMDBDiscoverPages(pages = MAX_TMDB_PAGES) {
-const results = [];
+  const results = [];
 
-for (let page = 1; page <= pages; page++) {
-const url =
-`https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
-`&sort_by=first_air_date.desc&language=en-US&page=${page}`;
+  for (let page = 1; page <= pages; page++) {
+    const url =
+      `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
+      `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
 
-```
-const json = await fetchJSON(url);
-if (!json?.results?.length) break;
+    const json = await fetchJSON(url);
+    if (!json?.results?.length) break;
 
-results.push(...json.results);
+    results.push(...json.results);
 
-if (page >= json.total_pages) break;
-```
+    if (page >= json.total_pages) break;
+  }
 
-}
-
-return results;
+  return results;
 }
 
 async function tmdbToTvmazeShows(list) {
-return (
-await pMap(
-list,
-async (item) => {
-if (!item?.id) return null;
+  return (
+    await pMap(
+      list,
+      async (item) => {
+        if (!item?.id) return null;
 
-```
-    const ext = await fetchJSON(
-      `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
-    );
+        const ext = await fetchJSON(
+          `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
+        );
+        if (!ext?.imdb_id) return null;
 
-    if (!ext?.imdb_id) return null;
+        const tm = await fetchJSON(
+          `https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(ext.imdb_id)}`
+        );
+        if (!tm?.id) return null;
 
-    const tm = await fetchJSON(
-      `https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(ext.imdb_id)}`
-    );
+        // Fetch with episodes
+        const detail = await fetchJSON(
+          `https://api.tvmaze.com/shows/${tm.id}?embed=episodes`
+        );
 
-    if (!tm?.id) return null;
-
-    // Fetch with episodes
-    const detail = await fetchJSON(
-      `https://api.tvmaze.com/shows/${tm.id}?embed=episodes`
-    );
-
-    return detail?.id ? { tvmaze: detail, tmdb: item } : null;
-  },
-  TMDB_CONCURRENCY
-)
-```
-
-).filter(Boolean);
+        return detail?.id ? { tvmaze: detail, tmdb: item } : null;
+      },
+      TMDB_CONCURRENCY
+    )
+  ).filter(Boolean);
 }
+
 
 // ==========================
 // FILTER LAST N DAYS
