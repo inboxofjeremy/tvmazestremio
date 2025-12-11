@@ -115,14 +115,13 @@ const url =
 `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
 `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
 
-```
 const json = await fetchJSON(url);
 if (!json?.results?.length) break;
 
 results.push(...json.results);
 
 if (page >= json.total_pages) break;
-```
+
 
 }
 
