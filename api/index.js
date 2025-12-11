@@ -1,260 +1,388 @@
-// index.js – TVMaze Weekly Schedule Addon with TMDB fallback
-// -----------------------------
+// api/index.js
+export const config = { runtime: "edge" };
+
+// ==========================
 // CONFIG
-// -----------------------------
-const TMDB_KEY = "944017b839d3c040bdd2574083e4c1bc";
-const TMDB_BASE = "https://api.themoviedb.org/3";
-const TVMAZE_BASE = "https://api.tvmaze.com";
+// ==========================
+const TMDB_API_KEY = "944017b839d3c040bdd2574083e4c1bc"; // user provided new key
+const MAX_TMDB_PAGES = 2;
+const TMDB_CONCURRENCY = 5;
 
-const DAYS_BACK = 10;
-
-// -----------------------------
-// HELPERS
-// -----------------------------
-function daysAgo(dateStr) {
-    if (!dateStr) return Infinity;
-    const then = new Date(dateStr);
-    const now = new Date();
-    return (now - then) / (1000 * 60 * 60 * 24);
-}
-
-function isRecent(dateStr) {
-    return daysAgo(dateStr) <= DAYS_BACK;
-}
-
-function removeSports(show) {
-    return (show.type || "").toLowerCase() !== "sports";
-}
-
-// TVMaze embedded episode recency
-function tmmazeHasRecentEpisode(show) {
-    if (!show._embedded || !show._embedded.episodes) return false;
-    return show._embedded.episodes.some(ep => isRecent(ep.airdate));
-}
-
-// TMDB episodes recency
-function tmdbHasRecentEpisode(episodes) {
-    return episodes.some(ep => isRecent(ep.air_date));
-}
-
-// -----------------------------
-// FETCH HELPERS
-// -----------------------------
-async function fetchJSON(url) {
-    const r = await fetch(url);
-    if (!r.ok) return null;
-    return await r.json();
-}
-
-// -----------------------------
-// TMDB FALLBACK
-// -----------------------------
-async function searchTMDBByName(name) {
-    const url = `${TMDB_BASE}/search/tv?query=${encodeURIComponent(name)}&api_key=${TMDB_KEY}`;
-    const data = await fetchJSON(url);
-    if (!data || !data.results || !data.results.length) return null;
-    return data.results[0]; // best match
-}
-
-async function fetchTMDBShow(tmdbId) {
-    return await fetchJSON(`${TMDB_BASE}/tv/${tmdbId}?api_key=${TMDB_KEY}`);
-}
-
-async function fetchTMDBSeason(tmdbId, s) {
-    return await fetchJSON(`${TMDB_BASE}/tv/${tmdbId}/season/${s}?api_key=${TMDB_KEY}`);
-}
-
-// Build TMDB episode list (season by season)
-async function buildTMDBEpisodeList(tmdbId, seasonCount) {
-    const episodes = [];
-    for (let s = 1; s <= seasonCount; s++) {
-        const season = await fetchTMDBSeason(tmdbId, s);
-        if (!season || !season.episodes) continue;
-        season.episodes.forEach(ep => {
-            episodes.push({
-                id: `tmdb:${tmdbId}:${s}:${ep.episode_number}`,
-                title: ep.name || `Episode ${ep.episode_number}`,
-                season: s,
-                episode: ep.episode_number,
-                released: ep.air_date || "",
-                overview: ep.overview || ""
-            });
-        });
-    }
-    return episodes;
-}
-
-// -----------------------------
-// TVMAZE SCHEDULE FETCH
-// -----------------------------
-async function fetchTVMazeSchedule() {
-    const today = new Date();
-    const urls = [];
-
-    for (let i = 0; i <= DAYS_BACK; i++) {
-        const d = new Date(today);
-        d.setDate(today.getDate() - i);
-        const yyyy = d.getFullYear();
-        const mm = String(d.getMonth() + 1).padStart(2, "0");
-        const dd = String(d.getDate()).padStart(2, "0");
-        urls.push(`${TVMAZE_BASE}/schedule?country=US&date=${yyyy}-${mm}-${dd}`);
-    }
-
-    let shows = {};
-    for (const url of urls) {
-        const data = await fetchJSON(url);
-        if (!data) continue;
-
-        for (const entry of data) {
-            if (!entry.show || !removeSports(entry.show)) continue;
-
-            const showId = entry.show.id;
-            if (!shows[showId]) {
-                shows[showId] = entry.show;
-            }
-        }
-    }
-
-    return Object.values(shows);
-}
-
-// -----------------------------
-// TVMAZE FULL SHOW
-// -----------------------------
-async function fetchTVMazeFullShow(id) {
-    return await fetchJSON(`${TVMAZE_BASE}/shows/${id}?embed=episodes`);
-}
-
-// -----------------------------
-// BUILD METADATA FROM TVMAZE
-// -----------------------------
-function buildTVMazeMeta(show) {
-    return {
-        id: `tvmaze:${show.id}`,
-        type: "series",
-        name: show.name,
-        poster: show.image?.original || show.image?.medium || "",
-        background: show.image?.original || "",
-        description: show.summary || "",
-        videos: show._embedded.episodes.map(ep => ({
-            id: `tvmaze:${ep.id}`,
-            title: ep.name || `Episode ${ep.number}`,
-            season: ep.season,
-            episode: ep.number,
-            released: ep.airdate || "",
-            overview: ep.summary || ""
-        }))
-    };
-}
-
-// -----------------------------
-// BUILD METADATA FROM TMDB
-// -----------------------------
-async function buildTMDBMeta(tmdbId, showData) {
-    const episodes = await buildTMDBEpisodeList(tmdbId, showData.number_of_seasons);
-
-    return {
-        id: `tmdb:${tmdbId}`,
-        type: "series",
-        name: showData.name,
-        poster: `https://image.tmdb.org/t/p/original${showData.poster_path}`,
-        background: `https://image.tmdb.org/t/p/original${showData.backdrop_path}`,
-        description: showData.overview || "",
-        videos: episodes.map(ep => ({
-            id: ep.id,
-            title: ep.title,
-            season: ep.season,
-            episode: ep.episode,
-            released: ep.released,
-            overview: ep.overview
-        }))
-    };
-}
-
-// -----------------------------
-// CATALOG HANDLER
-// -----------------------------
-async function buildCatalog() {
-    const baseShows = await fetchTVMazeSchedule();
-    const results = [];
-
-    for (const s of baseShows) {
-        const full = await fetchTVMazeFullShow(s.id);
-
-        if (full && tmmazeHasRecentEpisode(full)) {
-            results.push({
-                id: `tvmaze:${full.id}`,
-                type: "series",
-                name: full.name,
-                poster: full.image?.medium || "",
-            });
-            continue;
-        }
-
-        // TMDB fallback
-        const tmdb = await searchTMDBByName(s.name);
-        if (!tmdb) continue;
-
-        const tmdbShow = await fetchTMDBShow(tmdb.id);
-        if (!tmdbShow) continue;
-
-        const tmdbEpisodes = await buildTMDBEpisodeList(tmdb.id, tmdbShow.number_of_seasons);
-        if (!tmdbHasRecentEpisode(tmdbEpisodes)) continue;
-
-        results.push({
-            id: `tmdb:${tmdb.id}`,
-            type: "series",
-            name: tmdbShow.name,
-            poster: `https://image.tmdb.org/t/p/w500${tmdbShow.poster_path}`
-        });
-    }
-
-    return results;
-}
-
-// -----------------------------
-// STREMIO ADDON SERVER
-// -----------------------------
-const { addonBuilder } = require("stremio-addon-sdk");
-
-const manifest = {
-    id: "community.tvmaze_weekly_schedule",
-    version: "1.0.0",
-    name: "TVMaze Weekly Schedule (with TMDB fallback)",
-    catalog: [{ type: "series", id: "tvmaze_weekly_schedule" }],
-    resources: ["catalog", "meta"],
-    types: ["series"],
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "*",
+  "Content-Type": "application/json",
 };
 
-const builder = new addonBuilder(manifest);
+// ==========================
+// UTILS
+// ==========================
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
 
-// CATALOG ROUTE
-builder.defineCatalogHandler(async args => {
-    if (args.id !== "tvmaze_weekly_schedule") {
-        return { metas: [] };
+function cleanHTML(str) {
+  return str ? str.replace(/<[^>]+>/g, "").trim() : "";
+}
+
+// Pick airdate first, fallback to airstamp, return YYYY-MM-DD
+function pickDate(ep) {
+  if (ep?.airdate && ep.airdate !== "0000-00-00") return ep.airdate;
+  if (ep?.airstamp) return ep.airstamp.slice(0, 10);
+  return null;
+}
+
+function isForeign(show) {
+  const lang = (show.language || "english").toLowerCase();
+  const name = show.name || "";
+
+  if (lang !== "english") return true;
+
+  // Character-based foreign detection
+  if (/[\u4E00-\u9FFF\u3040-\u30FF\u31F0-\u31FF]/.test(name)) return true; // CJK
+  if (/[\u0400-\u04FF]/.test(name)) return true; // Cyrillic
+  if (/[\u0E00-\u0E7F]/.test(name)) return true; // Thai
+  if (/[\u0600-\u06FF]/.test(name)) return true; // Arabic
+  if (/[\u0900-\u097F]/.test(name)) return true; // Hindi
+  if (/[\uAC00-\uD7AF]/.test(name)) return true; // Korean
+
+  return false;
+}
+
+function isNews(show) {
+  const t = (show.type || "").toLowerCase();
+  return t === "news" || t === "talk show";
+}
+
+function isSportsShow(show) {
+  return (show.type || "").trim().toLowerCase() === "sports";
+}
+
+// Catch fallback sports shows by name or network keywords
+function looksLikeSports(show) {
+  const name = (show.name || "").toLowerCase();
+  const network = (show.network?.name || "").toLowerCase();
+  const sportsKeywords = ["football", "basketball", "soccer", "nhl", "mlb", "nfl"];
+  const sportsNetworks = ["espn", "nbc sports", "fox sports", "abc"];
+  return (
+    sportsKeywords.some((kw) => name.includes(kw)) ||
+    sportsNetworks.some((n) => network.includes(n))
+  );
+}
+
+async function pMap(list, fn, concurrency) {
+  const out = [];
+  let i = 0;
+
+  const workers = Array(concurrency).fill(0).map(async () => {
+    while (i < list.length) {
+      const idx = i++;
+      try {
+        out[idx] = await fn(list[idx], idx);
+      } catch {
+        out[idx] = null;
+      }
     }
-    const metas = await buildCatalog();
-    return { metas };
-});
+  });
 
-// META ROUTE
-builder.defineMetaHandler(async args => {
-    const [prefix, rawId] = args.id.split(":");
-    if (prefix === "tvmaze") {
-        const full = await fetchTVMazeFullShow(rawId);
-        if (!full) return { meta: {} };
-        return { meta: buildTVMazeMeta(full) };
+  await Promise.all(workers);
+  return out;
+}
+
+// ==========================
+// TMDB → IMDB → TVMaze
+// ==========================
+async function fetchTMDBDiscoverPages(pages = MAX_TMDB_PAGES) {
+  const results = [];
+  for (let page = 1; page <= pages; page++) {
+    const url =
+      `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}&sort_by=first_air_date.desc&language=en-US&page=${page}`;
+
+    const json = await fetchJSON(url);
+    if (!json?.results?.length) break;
+
+    results.push(...json.results);
+    if (page >= json.total_pages) break;
+  }
+  return results;
+}
+
+async function tmdbToTvmazeShows(list) {
+  return (
+    await pMap(
+      list,
+      async (item) => {
+        if (!item?.id) return null;
+
+        // Hardcoded fix for “Am I The A-Hole?”
+        if (item.id === 304159) {
+          return {
+            tvmaze: { id: 87454 }, // minimal, replaced later with full detail
+            tmdb: item,
+          };
+        }
+
+        const ext = await fetchJSON(
+          `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
+        );
+        if (!ext?.imdb_id) return null;
+
+        const tm = await fetchJSON(
+          `https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(ext.imdb_id)}`
+        );
+        if (!tm?.id) return null;
+
+        return { tvmaze: tm, tmdb: item };
+      },
+      TMDB_CONCURRENCY
+    )
+  ).filter(Boolean);
+}
+
+// ==========================
+// FILTER LAST N DAYS
+// ==========================
+function filterLastNDays(episodes, n, todayStr) {
+  const today = new Date(todayStr);
+  const start = new Date(todayStr);
+  start.setDate(start.getDate() - (n - 1));
+
+  return episodes.filter((ep) => {
+    const dateStr = pickDate(ep);
+    if (!dateStr) return false;
+    if (dateStr > todayStr) return false;
+
+    const d = new Date(dateStr);
+    return d >= start && d <= today;
+  });
+}
+
+// ==========================
+// BUILD SHOWS (CATALOG)
+// ==========================
+async function buildShows() {
+  // Use TODAY in UTC
+  const now = new Date();
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  const showMap = new Map();
+  const excludedSportsIds = new Set();
+
+  // --- 1) TVMaze schedules: last 10 days ---
+  for (let i = 0; i < 10; i++) {
+    const d = new Date(todayStr);
+    d.setDate(d.getDate() - i);
+
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const dateStr = `${y}-${m}-${day}`;
+
+    const a = await fetchJSON(
+      `https://api.tvmaze.com/schedule?country=US&date=${dateStr}`
+    );
+    const b = await fetchJSON(
+      `https://api.tvmaze.com/schedule/web?date=${dateStr}`
+    );
+    const c = await fetchJSON(
+      `https://api.tvmaze.com/schedule/full?date=${dateStr}`
+    );
+
+    for (const list of [a, b, c]) {
+      if (!Array.isArray(list)) continue;
+
+      for (const ep of list) {
+        const show = ep?.show || ep?._embedded?.show;
+        if (!show?.id) continue;
+
+        if (isSportsShow(show) || looksLikeSports(show)) {
+          excludedSportsIds.add(show.id);
+          continue;
+        }
+
+        if (isForeign(show)) continue;
+        if (isNews(show)) continue;
+
+        const cur = showMap.get(show.id);
+        if (!cur) showMap.set(show.id, { show, episodes: [ep] });
+        else cur.episodes.push(ep);
+      }
+    }
+  }
+
+  // --- 2) TMDB fallback → TVMaze lookup ---
+  const tmdbList = await fetchTMDBDiscoverPages();
+  const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
+
+  for (const entry of tmdbMapped) {
+    const show = entry.tvmaze;
+    if (!show?.id) continue;
+
+    if (excludedSportsIds.has(show.id)) continue;
+    if (isForeign(show)) continue;
+    if (isNews(show)) continue;
+    if (isSportsShow(show) || looksLikeSports(show)) continue;
+
+    // fetch full embedded episodes
+    const detail = await fetchJSON(
+      `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
+    );
+    if (!detail) continue;
+
+    const eps = detail?._embedded?.episodes || [];
+    if (!eps.length) continue;
+
+    const cur = showMap.get(show.id);
+    if (!cur)
+      showMap.set(show.id, { show: detail, episodes: eps });
+    else cur.episodes.push(...eps);
+  }
+
+  // --- FINAL FILTER + SORT ---
+  const results = [...showMap.values()]
+    .map((v) => {
+      const recent = filterLastNDays(v.episodes, 10, todayStr);
+      if (!recent.length) return null;
+
+      const latestDate = recent
+        .map((e) => pickDate(e))
+        .filter(Boolean)
+        .sort()
+        .reverse()[0];
+
+      return {
+        id: `tvmaze:${v.show.id}`,
+        type: "series",
+        name: v.show.name,
+        description: cleanHTML(v.show.summary),
+        poster: v.show.image?.medium || v.show.image?.original || null,
+        background: v.show.image?.original || null,
+        latestDate,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.latestDate.localeCompare(a.latestDate));
+
+  return results;
+}
+
+// ==========================
+// META HANDLING
+// ==========================
+async function getTVMazeMeta(showId) {
+  const show = await fetchJSON(
+    `https://api.tvmaze.com/shows/${showId}?embed=episodes`
+  );
+
+  if (!show) return null;
+
+  const eps = (show._embedded?.episodes || []).map((ep) => ({
+    id: `tvmaze:${ep.id}`,
+    title: ep.name || `Episode ${ep.number}`,
+    season: ep.season,
+    episode: ep.number,
+    released: ep.airdate || null,
+    overview: cleanHTML(ep.summary),
+  }));
+
+  return {
+    id: `tvmaze:${show.id}`,
+    type: "series",
+    name: show.name,
+    description: cleanHTML(show.summary),
+    poster: show.image?.original || show.image?.medium || null,
+    background: show.image?.original || null,
+    videos: eps,
+  };
+}
+
+// ==========================
+// ROUTER
+// ==========================
+export default async function handler(req) {
+  const u = new URL(req.url);
+  const p = u.pathname;
+
+  // Manifest
+  if (p === "/manifest.json") {
+    return new Response(
+      JSON.stringify(
+        {
+          id: "tvmaze-weekly-schedule",
+          version: "1.0.0",
+          name: "Weekly Schedule",
+          description:
+            "English shows aired in the last 10 days. Excludes news, talk shows, and sports.",
+          catalogs: [
+            {
+              type: "series",
+              id: "tvmaze_weekly_schedule",
+              name: "Weekly Schedule",
+            },
+          ],
+          resources: ["catalog", "meta"],
+          types: ["series"],
+          idPrefixes: ["tvmaze", "tmdb"],
+        },
+        null,
+        2
+      ),
+      { headers: CORS }
+    );
+  }
+
+  // Catalog
+  if (p.startsWith("/catalog/series/tvmaze_weekly_schedule.json")) {
+    const shows = await buildShows();
+
+    return new Response(
+      JSON.stringify(
+        {
+          metas: shows,
+          ts: Date.now(),
+        },
+        null,
+        2
+      ),
+      { headers: CORS }
+    );
+  }
+
+  // Meta
+  if (p.startsWith("/meta/series/")) {
+    const id = p.split("/").pop().replace(".json", "");
+
+    if (id.startsWith("tvmaze:")) {
+      const showId = id.replace("tvmaze:", "");
+      const meta = await getTVMazeMeta(showId);
+
+      return new Response(
+        JSON.stringify({ meta }, null, 2),
+        { headers: CORS }
+      );
     }
 
-    if (prefix === "tmdb") {
-        const showData = await fetchTMDBShow(rawId);
-        if (!showData) return { meta: {} };
-        const meta = await buildTMDBMeta(rawId, showData);
-        return { meta };
-    }
+    return new Response(
+      JSON.stringify({
+        meta: {
+          id,
+          type: "series",
+          name: "Unknown",
+          videos: [],
+        },
+      }),
+      { headers: CORS }
+    );
+  }
 
-    return { meta: {} };
-});
-
-// EXPORT
-module.exports = builder.getInterface();
+  return new Response("Not found", { status: 404, headers: CORS });
+}
