@@ -60,6 +60,15 @@ function isNews(show) {
   return t === "news" || t === "talk show";
 }
 
+// BLOCK: Football Shows
+function isFootballShow(show) {
+  const name = (show.name || "").toLowerCase();
+  const genres = (show.genres || []).map((g) => g.toLowerCase());
+
+  // Include shows with "football" in the name or genre
+  return name.includes("football") || genres.includes("football");
+}
+
 async function pMap(list, fn, concurrency) {
   const out = [];
   let i = 0;
@@ -184,6 +193,7 @@ async function buildShows() {
         if (!show?.id) continue;
         if (isForeign(show)) continue;
         if (isNews(show)) continue;
+        if (!isFootballShow(show)) continue; // <- football filter
 
         const cur = showMap.get(show.id);
         if (!cur) showMap.set(show.id, { show, episodes: [ep] });
@@ -201,6 +211,7 @@ async function buildShows() {
     if (!show?.id) continue;
     if (isForeign(show)) continue;
     if (isNews(show)) continue;
+    if (!isFootballShow(show)) continue; // <- football filter
 
     const detail = await fetchJSON(
       `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
@@ -256,7 +267,7 @@ export default async function handler(req) {
           version: "1.0.0",
           name: "Weekly Schedule",
           description:
-            "English shows aired in the last 10 days. No news or talk shows. Includes reality/game shows.",
+            "English football shows aired in the last 10 days. No news or talk shows.",
           catalogs: [
             {
               type: "series",
