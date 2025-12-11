@@ -3,7 +3,7 @@ export const config = { runtime: "edge" };
 // ==========================
 // CONFIG
 // ==========================
-const TMDB_API_KEY = "944017b839d3c040bdd2574083e4c1bc"; // approved by user
+const TMDB_API_KEY = "944017b839d3c040bdd2574083e4c1bc";
 const MAX_TMDB_PAGES = 2;
 const TMDB_CONCURRENCY = 5;
 
@@ -37,16 +37,15 @@ return null;
 }
 
 function isForeign(show) {
-const lang = (show.language || "").toLowerCase();
-return !(lang === "english" || lang === "en");
-}
+const lang = (show.language || "english").toLowerCase();
+const allowed = ["us", "uk", "gb", "ca", "au", "nz", "ie"];
 
-function isAllowedCountry(show) {
-const allowed = ["US", "GB", "CA", "AU", "IE", "NZ"];
-const networkCountry = show.network?.country?.code;
-const webCountry = show.webChannel?.country?.code;
-const c = networkCountry || webCountry || null;
-return c ? allowed.includes(c) : true;
+if (lang !== "english") return true;
+
+const c = show.network?.country?.code?.toLowerCase();
+if (!allowed.includes(c)) return true;
+
+return false;
 }
 
 function isNews(show) {
@@ -60,14 +59,18 @@ return (show.type || "").trim().toLowerCase() === "sports";
 
 function looksLikeSports(show) {
 const name = (show.name || "").toLowerCase();
-const sportsWords = ["football","soccer","basketball","mlb","nhl","nfl","ufc","premier league"];
-return sportsWords.some(w => name.includes(w));
+const network = (show.network?.name || "").toLowerCase();
+const sportsKeywords = ["football", "basketball", "soccer", "nhl", "mlb", "nfl"];
+const sportsNetworks = ["espn", "nbc sports", "fox sports", "abc"];
+return (
+sportsKeywords.some((kw) => name.includes(kw)) ||
+sportsNetworks.some((n) => network.includes(n))
+);
 }
 
 async function pMap(list, fn, concurrency) {
 const out = [];
 let i = 0;
-
 const workers = Array(concurrency)
 .fill(0)
 .map(async () => {
@@ -80,17 +83,15 @@ out[idx] = null;
 }
 }
 });
-
 await Promise.all(workers);
 return out;
 }
 
 // ==========================
-// TMDB → IMDB → TVMaze
+// TMDB
 // ==========================
 async function fetchTMDBDiscoverPages(pages = MAX_TMDB_PAGES) {
 const results = [];
-
 for (let page = 1; page <= pages; page++) {
 const url =
 `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
@@ -101,8 +102,8 @@ if (!json?.results?.length) break;
 
 results.push(...json.results);
 if (page >= json.total_pages) break;
-}
 
+}
 return results;
 }
 
@@ -113,23 +114,19 @@ list,
 async (item) => {
 if (!item?.id) return null;
 
-
     const ext = await fetchJSON(
       `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
     );
-
     if (!ext?.imdb_id) return null;
 
     const tm = await fetchJSON(
       `https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(ext.imdb_id)}`
     );
-
     if (!tm?.id) return null;
 
     const detail = await fetchJSON(
       `https://api.tvmaze.com/shows/${tm.id}?embed=episodes`
     );
-
     return detail?.id ? { tvmaze: detail, tmdb: item } : null;
   },
   TMDB_CONCURRENCY
@@ -140,7 +137,7 @@ if (!item?.id) return null;
 }
 
 // ==========================
-// FILTER LAST N DAYS
+// LAST N DAYS FILTER
 // ==========================
 function filterLastNDays(episodes, n, todayStr) {
 const today = new Date(todayStr);
@@ -151,13 +148,17 @@ return episodes.filter((ep) => {
 const dateStr = pickDate(ep);
 if (!dateStr) return false;
 if (dateStr > todayStr) return false;
+
+
 const d = new Date(dateStr);
 return d >= start && d <= today;
+
+
 });
 }
 
 // ==========================
-// BUILD SHOW LIST
+// MAIN BUILDER
 // ==========================
 async function buildShows() {
 const now = new Date();
@@ -167,52 +168,91 @@ const dd = String(now.getUTCDate()).padStart(2, "0");
 const todayStr = `${yyyy}-${mm}-${dd}`;
 
 const showMap = new Map();
+const excludedSportsIds = new Set();
 
 // ==========================
-// GLOBAL FALLBACK: schedule/full
-// (fast, complete, includes UK/CA/AU/NZ/IE)
+// 1) Primary Schedule Sources
 // ==========================
 for (let i = 0; i < 10; i++) {
 const d = new Date(todayStr);
 d.setDate(d.getDate() - i);
+
 
 const y = d.getUTCFullYear();
 const m = String(d.getUTCMonth() + 1).padStart(2, "0");
 const day = String(d.getUTCDate()).padStart(2, "0");
 const dateStr = `${y}-${m}-${day}`;
 
-const full = await fetchJSON(
-  `https://api.tvmaze.com/schedule/full?date=${dateStr}`
-);
+const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${dateStr}`);
+const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${dateStr}`);
+const c = await fetchJSON(`https://api.tvmaze.com/schedule/full?date=${dateStr}`);
 
-if (!Array.isArray(full)) continue;
+for (const list of [a, b, c]) {
+  if (!Array.isArray(list)) continue;
 
-for (const ep of full) {
-  const show = ep?._embedded?.show;
-  if (!show?.id) continue;
+  for (const ep of list) {
+    const show = ep?.show || ep?._embedded?.show;
+    if (!show?.id) continue;
 
-  if (!isAllowedCountry(show)) continue;
-  if (isForeign(show)) continue;
-  if (isNews(show)) continue;
-  if (isSportsShow(show) || looksLikeSports(show)) continue;
+    if (isSportsShow(show)) {
+      excludedSportsIds.add(show.id);
+      continue;
+    }
+    if (isForeign(show)) continue;
+    if (isNews(show)) continue;
+    if (looksLikeSports(show)) continue;
 
-  const cur = showMap.get(show.id);
-  if (!cur) showMap.set(show.id, { show, episodes: [ep] });
-  else cur.episodes.push(ep);
+    const cur = showMap.get(show.id);
+    if (!cur) showMap.set(show.id, { show, episodes: [ep] });
+    else cur.episodes.push(ep);
+  }
 }
+
+
+}
+
+// ==================================================
+// 2) episodesbydate fallback for missing-episode shows
+// ==================================================
+for (const [id, obj] of showMap.entries()) {
+const recent = filterLastNDays(obj.episodes, 10, todayStr);
+if (recent.length > 0) continue;
+
+
+for (let i = 0; i < 10; i++) {
+  const d = new Date(todayStr);
+  d.setDate(d.getDate() - i);
+
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const dateStr = `${y}-${m}-${day}`;
+
+  const eps = await fetchJSON(
+    `https://api.tvmaze.com/shows/${id}/episodesbydate?date=${dateStr}`
+  );
+
+  if (Array.isArray(eps) && eps.length > 0) {
+    obj.episodes.push(...eps);
+  }
+}
+
 
 }
 
 // ==========================
-// TMDB fallback → TVMaze
+// 3) TMDB fallback for completely missing shows
 // ==========================
 const tmdbList = await fetchTMDBDiscoverPages();
-const mapped = await tmdbToTvmazeShows(tmdbList);
+const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
 
-for (const entry of mapped) {
+for (const entry of tmdbMapped) {
 const show = entry.tvmaze;
-if (!show) continue;
-if (!isAllowedCountry(show)) continue;
+if (!show?.id) continue;
+
+
+if (showMap.has(show.id)) continue;
+if (excludedSportsIds.has(show.id)) continue;
 if (isForeign(show)) continue;
 if (isNews(show)) continue;
 if (isSportsShow(show) || looksLikeSports(show)) continue;
@@ -220,20 +260,19 @@ if (isSportsShow(show) || looksLikeSports(show)) continue;
 const eps = show._embedded?.episodes || [];
 if (!eps.length) continue;
 
-const cur = showMap.get(show.id);
-if (!cur) showMap.set(show.id, { show, episodes: eps });
-else cur.episodes.push(...eps);
+showMap.set(show.id, { show, episodes: eps });
 
 
 }
 
 // ==========================
-// FINAL FILTER + SORT
+// 4) FINAL FILTER + SORT
 // ==========================
 const list = [...showMap.values()]
 .map((v) => {
 const recent = filterLastNDays(v.episodes, 10, todayStr);
 if (!recent.length) return null;
+
 
   const latestDate = recent
     .map((e) => pickDate(e))
@@ -265,16 +304,14 @@ export default async function handler(req) {
 const u = new URL(req.url);
 const p = u.pathname;
 
-// Manifest
 if (p === "/manifest.json") {
 return new Response(
-JSON.stringify(
-{
+JSON.stringify({
 id: "tvmaze-weekly-schedule",
 version: "3.0.0",
-name: "Weekly Schedule",
+name: "Weekly Schedule + Fallbacks",
 description:
-"English-language shows aired in the last 10 days from US/UK/CA/AU/IE/NZ. No sports, news, talk shows, or foreign-language content.",
+"English shows aired in the last 10 days. Includes fallback from episodesbydate and TMDB.",
 catalogs: [
 {
 type: "series",
@@ -285,15 +322,11 @@ name: "Weekly Schedule",
 resources: ["catalog", "meta"],
 types: ["series"],
 idPrefixes: ["tvmaze"],
-},
-null,
-2
-),
+}),
 { headers: CORS }
 );
 }
 
-// Catalog
 if (p.startsWith("/catalog/series/tvmaze_weekly_schedule.json")) {
 const shows = await buildShows();
 return new Response(
@@ -302,10 +335,10 @@ JSON.stringify({ metas: shows, ts: Date.now() }, null, 2),
 );
 }
 
-// Meta
 if (p.startsWith("/meta/series/")) {
 const id = p.split("/").pop().replace(".json", "");
 const showId = id.replace("tvmaze:", "");
+
 
 const show = await fetchJSON(
   `https://api.tvmaze.com/shows/${showId}?embed=episodes`
@@ -347,6 +380,7 @@ return new Response(
   ),
   { headers: CORS }
 );
+
 
 }
 
