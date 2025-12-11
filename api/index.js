@@ -37,15 +37,11 @@ function pickDate(ep) {
   return null;
 }
 
-// ==========================
-// FILTERS
-// ==========================
 function isForeign(show) {
   const lang = (show.language || "english").toLowerCase();
   const name = show.name || "";
 
   if (lang !== "english") return true;
-
   if (/[\u4E00-\u9FFF\u3040-\u30FF\u31F0-\u31FF]/.test(name)) return true;
   if (/[\u0400-\u04FF]/.test(name)) return true;
   if (/[\u0E00-\u0E7F]/.test(name)) return true;
@@ -65,121 +61,79 @@ function isSportsShow(show) {
   return (show.type || "").trim().toLowerCase() === "sports";
 }
 
-function looksLikeSports(show) {
-  const name = (show.name || "").toLowerCase();
-  const network = (show.network?.name || "").toLowerCase();
-  const sportsKeywords = ["football", "basketball", "soccer", "nhl", "mlb", "nfl"];
-  const sportsNetworks = ["espn", "nbc sports", "fox sports", "abc"];
-  return (
-    sportsKeywords.some((kw) => name.includes(kw)) ||
-    sportsNetworks.some((n) => network.includes(n))
-  );
+// ============================
+// HYBRID FUZZY MATCH SYSTEM (NEW)
+// ============================
+function normalize(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
-// ==========================
-// HYBRID FUZZY MATCH
-// ==========================
-function levenshtein(a, b) {
-  if (!a || !b) return 9999;
-  const m = a.length;
-  const n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+function tokenOverlap(a, b) {
+  const A = new Set(normalize(a).split(" "));
+  const B = new Set(normalize(b).split(" "));
+  let shared = 0;
+  A.forEach((w) => {
+    if (B.has(w)) shared++;
+  });
+  const total = new Set([...A, ...B]).size;
+  return total === 0 ? 0 : shared / total;
+}
 
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
+function levenshtein(a, b) {
+  if (!a || !b) return 1;
+  a = normalize(a);
+  b = normalize(b);
+
+  const dp = Array(b.length + 1)
+    .fill(0)
+    .map(() => Array(a.length + 1).fill(0));
+
+  for (let i = 0; i <= a.length; i++) dp[0][i] = i;
+  for (let j = 0; j <= b.length; j++) dp[j][0] = j;
+
+  for (let j = 1; j <= b.length; j++) {
+    for (let i = 1; i <= a.length; i++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,
-        dp[i][j - 1] + 1,
-        dp[i - 1][j - 1] + cost
+      dp[j][i] = Math.min(
+        dp[j - 1][i] + 1,
+        dp[j][i - 1] + 1,
+        dp[j - 1][i - 1] + cost
       );
     }
   }
-  return dp[m][n];
-}
-
-function tokenOverlapScore(a, b) {
-  const ta = new Set(a.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/));
-  const tb = new Set(b.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/));
-
-  const intersection = [...ta].filter((t) => tb.has(t));
-  const union = new Set([...ta, ...tb]);
-
-  return union.size === 0 ? 0 : intersection.length / union.size;
+  return dp[b.length][a.length] / Math.max(a.length, b.length);
 }
 
 function hybridSimilarity(a, b) {
-  const t = tokenOverlapScore(a, b);
-  const dist = levenshtein(a.toLowerCase(), b.toLowerCase());
-  const maxLen = Math.max(a.length, b.length) || 1;
-  const editSim = 1 - dist / maxLen;
-
-  return (t + editSim) / 2;
+  const tok = tokenOverlap(a, b); // higher better
+  const lev = 1 - levenshtein(a, b); // higher better
+  return (tok + lev) / 2;
 }
 
-// ==========================
-// pMap
-// ==========================
-async function pMap(list, fn, concurrency) {
-  const out = [];
-  let i = 0;
-
-  const workers = Array(concurrency)
-    .fill(0)
-    .map(async () => {
-      while (i < list.length) {
-        const idx = i++;
-        try {
-          out[idx] = await fn(list[idx], idx);
-        } catch {
-          out[idx] = null;
-        }
-      }
-    });
-
-  await Promise.all(workers);
-  return out;
-}
-
-// ==========================
-// TMDB → TVMaze MAP
-// ==========================
-async function tmdbToTvmazeShow(tmItem) {
-  if (!tmItem?.id) return null;
-
-  // --- 1) TRY IMDB LOOKUP ---
-  const ext = await fetchJSON(
-    `https://api.themoviedb.org/3/tv/${tmItem.id}/external_ids?api_key=${TMDB_API_KEY}`
-  );
-
-  if (ext?.imdb_id) {
-    const show = await fetchJSON(
-      `https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(ext.imdb_id)}`
-    );
-    if (show?.id) return show;
-  }
-
-  // --- 2) FALLBACK: TVMaze fuzzy search ---
-  const search = await fetchJSON(
-    `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(tmItem.name)}`
-  );
-  if (!Array.isArray(search) || search.length === 0) return null;
+// ============================
+// TMDB → TVMaze WITH FUZZY FALLBACK (NEW)
+// ============================
+async function fuzzySearchTVMazeByName(name) {
+  const q = encodeURIComponent(name);
+  const results = await fetchJSON(`https://api.tvmaze.com/search/shows?q=${q}`);
+  if (!Array.isArray(results)) return null;
 
   let best = null;
   let bestScore = 0;
 
-  for (const entry of search) {
-    const s = entry.show;
-    if (!s) continue;
-    if (isForeign(s)) continue;
-    if (isNews(s)) continue;
-    if (isSportsShow(s) || looksLikeSports(s)) continue;
+  for (const r of results) {
+    const show = r.show;
+    if (!show?.id) continue;
+    if (isForeign(show)) continue;
+    if (isNews(show)) continue;
+    if (isSportsShow(show)) continue;
 
-    const score = hybridSimilarity(tmItem.name, s.name);
-    if (score >= 0.55 && score > bestScore) {
-      best = s;
+    const score = hybridSimilarity(name, show.name);
+    if (score > bestScore && score >= 0.55) {
+      best = show;
       bestScore = score;
     }
   }
@@ -187,30 +141,41 @@ async function tmdbToTvmazeShow(tmItem) {
   return best;
 }
 
-async function tmdbDiscoverFallback() {
-  const list = [];
-  for (let page = 1; page <= MAX_TMDB_PAGES; page++) {
-    const url =
-      `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
-      `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
-    const json = await fetchJSON(url);
-    if (!json?.results?.length) break;
-    list.push(...json.results);
-    if (page >= json.total_pages) break;
-  }
+// TMDB mapping function
+async function tmdbToTvmazeShows(list) {
+  return (
+    await Promise.all(
+      list.map(async (item) => {
+        if (!item?.id) return null;
 
-  return pMap(
-    list,
-    async (item) => {
-      const show = await tmdbToTvmazeShow(item);
-      return show ? { tvmaze: show, tmdb: item } : null;
-    },
-    TMDB_CONCURRENCY
-  ).then((x) => x.filter(Boolean));
+        // 1) Try IMDB mapping
+        const ext = await fetchJSON(
+          `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
+        );
+
+        if (ext?.imdb_id) {
+          const tm = await fetchJSON(
+            `https://api.tvmaze.com/lookup/shows?imdb=${encodeURIComponent(
+              ext.imdb_id
+            )}`
+          );
+          if (tm?.id) return { tvmaze: tm, tmdb: item };
+        }
+
+        // 2) Fuzzy fallback (NEW)
+        const fuzzy = await fuzzySearchTVMazeByName(item.name);
+        if (fuzzy?.id) {
+          return { tvmaze: fuzzy, tmdb: item };
+        }
+
+        return null;
+      })
+    )
+  ).filter(Boolean);
 }
 
 // ==========================
-// FILTER LAST 10 DAYS
+// FILTER LAST N DAYS
 // ==========================
 function filterLastNDays(episodes, n, todayStr) {
   const today = new Date(todayStr);
@@ -218,14 +183,14 @@ function filterLastNDays(episodes, n, todayStr) {
   start.setDate(start.getDate() - (n - 1));
 
   return episodes.filter((ep) => {
-    const ds = pickDate(ep);
-    if (!ds) return false;
-    if (ds > todayStr) return false;
-    const d = new Date(ds);
+    const dateStr = pickDate(ep);
+    if (!dateStr) return false;
+    if (dateStr > todayStr) return false;
+
+    const d = new Date(dateStr);
     return d >= start && d <= today;
   });
 }
-
 // ==========================
 // BUILD SHOWS
 // ==========================
@@ -240,18 +205,25 @@ async function buildShows() {
   const excludedSportsIds = new Set();
 
   // -----------------------------------------
-  // 1) TVMaze Schedule Collection
+  // 1) TVMaze SCHEDULE (Primary Source)
   // -----------------------------------------
   for (let i = 0; i < 10; i++) {
     const d = new Date(todayStr);
     d.setDate(d.getDate() - i);
-    const dateStr = d.toISOString().slice(0, 10);
 
-    const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${dateStr}`);
-    const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${dateStr}`);
-    const c = await fetchJSON(`https://api.tvmaze.com/schedule/full?date=${dateStr}`);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const dateStr = `${y}-${m}-${day}`;
 
-    for (const list of [a, b, c]) {
+    const urls = [
+      `https://api.tvmaze.com/schedule?country=US&date=${dateStr}`,
+      `https://api.tvmaze.com/schedule/web?date=${dateStr}`,
+      `https://api.tvmaze.com/schedule/full?date=${dateStr}`,
+    ];
+
+    for (const url of urls) {
+      const list = await fetchJSON(url);
       if (!Array.isArray(list)) continue;
 
       for (const ep of list) {
@@ -267,72 +239,87 @@ async function buildShows() {
         if (isNews(show)) continue;
 
         const cur = showMap.get(show.id);
-        if (!cur) showMap.set(show.id, { show, episodes: [ep] });
-        else cur.episodes.push(ep);
+        if (!cur) {
+          showMap.set(show.id, { show, episodes: [ep] });
+        } else {
+          cur.episodes.push(ep);
+        }
       }
     }
   }
-  // -----------------------------------------
-  // 2) TMDB FALLBACK (HYBRID MATCH)
-  // -----------------------------------------
-  const tmdbFallback = await tmdbDiscoverFallback();
 
-  for (const item of tmdbFallback) {
-    const s = item?.tvmaze;
-    if (!s?.id) continue;
+  // -----------------------------------------
+  // 2) TMDB FALLBACK (Primary Lookup + Fuzzy Fallback)
+  // -----------------------------------------
+  const tmdbResults = [];
 
-    if (!showMap.has(s.id)) {
-      showMap.set(s.id, { show: s, episodes: [] });
+  // Fetch TMDB discover pages
+  for (let page = 1; page <= MAX_TMDB_PAGES; page++) {
+    const url =
+      `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
+      `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
+
+    const json = await fetchJSON(url);
+    if (!json?.results?.length) break;
+
+    tmdbResults.push(...json.results);
+    if (page >= json.total_pages) break;
+  }
+
+  const mappedTMDB = await tmdbToTvmazeShows(tmdbResults);
+
+  for (const entry of mappedTMDB) {
+    const show = entry.tvmaze;
+    if (!show?.id) continue;
+
+    if (excludedSportsIds.has(show.id)) continue;
+    if (isForeign(show)) continue;
+    if (isNews(show)) continue;
+    if (isSportsShow(show)) continue;
+
+    // Fetch embedded episodes for fallback
+    const detail = await fetchJSON(
+      `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
+    );
+    const eps = detail?._embedded?.episodes || [];
+
+    if (!showMap.has(show.id)) {
+      showMap.set(show.id, { show: detail, episodes: eps });
+    } else {
+      showMap.get(show.id).episodes.push(...eps);
     }
   }
 
   // -----------------------------------------
-  // 3) For ALL shows: Fetch embedded episodes and apply LAST-10-DAYS LOGIC
+  // 3) FINAL PASS — CHECK EPISODES IN LAST 10 DAYS
   // -----------------------------------------
-  const finalMap = new Map();
+  const output = [];
 
-  for (const [id, entry] of showMap) {
-    if (excludedSportsIds.has(id)) continue;
+  for (const { show, episodes } of showMap.values()) {
+    const recent = filterLastNDays(episodes, 10, todayStr);
+    if (!recent.length) continue;
 
-    const show = entry.show;
-    const collected = entry.episodes || [];
+    const latestDate = recent
+      .map((e) => pickDate(e))
+      .filter(Boolean)
+      .sort()
+      .reverse()[0];
 
-    const embeddedURL = `https://api.tvmaze.com/shows/${id}?embed=episodes`;
-    const emb = await fetchJSON(embeddedURL);
-    const embeddedEpisodes = emb?._embedded?.episodes || [];
-
-    const recentCollected = filterLastNDays(collected, 10, todayStr);
-    const recentEmbedded = filterLastNDays(embeddedEpisodes, 10, todayStr);
-
-    const allRecent = [...recentCollected, ...recentEmbedded];
-    const unique = new Map();
-    for (const ep of allRecent) {
-      if (ep?.id && !unique.has(ep.id)) unique.set(ep.id, ep);
-    }
-
-    if (unique.size > 0) {
-      finalMap.set(id, {
-        show,
-        episodes: [...unique.values()],
-      });
-    }
-  }
-
-  // -----------------------------------------
-  // 4) Convert to Stremio Catalog
-  // -----------------------------------------
-  const stremioCatalog = {
-    metas: [...finalMap.values()].map((x) => ({
-      id: String(x.show.id),
+    output.push({
+      id: `tvmaze:${show.id}`,
       type: "series",
-      name: x.show.name,
-      poster: x.show.image?.medium || x.show.image?.original || null,
-      description: cleanHTML(x.show.summary),
-      releaseInfo: x.show.premiered || "",
-    })),
-  };
+      name: show.name,
+      poster: show.image?.medium || show.image?.original || null,
+      background: show.image?.original || null,
+      description: cleanHTML(show.summary),
+      latestDate,
+    });
+  }
 
-  return stremioCatalog;
+  // Sort newest first
+  output.sort((a, b) => b.latestDate.localeCompare(a.latestDate));
+
+  return output;
 }
 
 // ==========================
@@ -340,22 +327,103 @@ async function buildShows() {
 // ==========================
 export default async function handler(req) {
   const url = new URL(req.url);
-  const pathname = url.pathname;
+  const path = url.pathname;
 
-  if (pathname.endsWith("/catalog")) {
-    try {
-      const json = await buildShows();
-      return new Response(JSON.stringify(json, null, 2), { status: 200, headers: CORS });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: true, message: "Catalog failed", detail: String(err) }),
-        { status: 500, headers: CORS }
-      );
-    }
+  // --------------------------
+  // MANIFEST
+  // --------------------------
+  if (path === "/manifest.json") {
+    return new Response(
+      JSON.stringify(
+        {
+          id: "tvmaze-weekly-schedule",
+          version: "2.0.0",
+          name: "Weekly Schedule (10-Day, Fuzzy TMDB Fallback)",
+          description:
+            "English shows aired in the last 10 days. Includes TMDB fuzzy fallback for shows missing IMDB IDs.",
+          catalogs: [
+            {
+              type: "series",
+              id: "tvmaze_weekly_schedule",
+              name: "Weekly Schedule",
+            },
+          ],
+          resources: ["catalog", "meta"],
+          types: ["series"],
+          idPrefixes: ["tvmaze"],
+        },
+        null,
+        2
+      ),
+      { status: 200, headers: CORS }
+    );
   }
 
-  return new Response(
-    JSON.stringify({ error: "Not found" }),
-    { status: 404, headers: CORS }
-  );
+  // --------------------------
+  // CATALOG
+  // --------------------------
+  if (path === "/catalog/series/tvmaze_weekly_schedule.json") {
+    const shows = await buildShows();
+    return new Response(
+      JSON.stringify({ metas: shows, ts: Date.now() }, null, 2),
+      { status: 200, headers: CORS }
+    );
+  }
+
+  // --------------------------
+  // META
+  // --------------------------
+  if (path.startsWith("/meta/series/")) {
+    const id = path.split("/").pop().replace(".json", "");
+    const showId = id.replace("tvmaze:", "");
+
+    const show = await fetchJSON(
+      `https://api.tvmaze.com/shows/${showId}?embed=episodes`
+    );
+
+    if (!show) {
+      return new Response(
+        JSON.stringify({
+          meta: { id, type: "series", name: "Unknown", videos: [] },
+        }),
+        { status: 200, headers: CORS }
+      );
+    }
+
+    const eps = (show._embedded?.episodes || []).map((ep) => ({
+      id: `tvmaze:${ep.id}`,
+      title: ep.name || `Episode ${ep.number}`,
+      season: ep.season,
+      episode: ep.number,
+      released: ep.airdate || null,
+      overview: cleanHTML(ep.summary),
+    }));
+
+    return new Response(
+      JSON.stringify(
+        {
+          meta: {
+            id: `tvmaze:${show.id}`,
+            type: "series",
+            name: show.name,
+            poster: show.image?.original || show.image?.medium || null,
+            background: show.image?.original || null,
+            description: cleanHTML(show.summary),
+            videos: eps,
+          },
+        },
+        null,
+        2
+      ),
+      { status: 200, headers: CORS }
+    );
+  }
+
+  // --------------------------
+  // 404 FALLBACK
+  // --------------------------
+  return new Response("Not found", {
+    status: 404,
+    headers: CORS,
+  });
 }
