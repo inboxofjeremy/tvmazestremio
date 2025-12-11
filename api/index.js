@@ -38,7 +38,7 @@ function pickDate(ep) {
 
 function isForeign(show) {
   const lang = (show.language || "english").toLowerCase();
-  const name = show.name || "";
+  const name = show?.name || "";
 
   if (lang !== "english") return true;
 
@@ -62,10 +62,11 @@ function isSportsShow(show) {
 }
 
 function looksLikeSports(show) {
-  const name = (show.name || "").toLowerCase();
-  const network = (show.network?.name || "").toLowerCase();
+  const name = (show?.name || "").toLowerCase();
+  const network = (show?.network?.name || "").toLowerCase();
   const sportsKeywords = ["football", "basketball", "soccer", "nhl", "mlb", "nfl"];
   const sportsNetworks = ["espn", "nbc sports", "fox sports", "abc"];
+
   return (
     sportsKeywords.some((kw) => name.includes(kw)) ||
     sportsNetworks.some((n) => network.includes(n))
@@ -133,7 +134,6 @@ async function tmdbToTvmazeShows(list) {
           `https://api.tvmaze.com/shows/${tm.id}?embed=episodes`
         );
 
-        // ✔ FIXED: missing semicolon caused your previous build failure
         return detail && detail.id
           ? { tvmaze: detail, tmdb: item }
           : null;
@@ -162,6 +162,15 @@ function filterLastNDays(episodes, n, todayStr) {
 }
 
 // ==========================
+// NEW FALLBACK: TVMAZE EPISODE-DATE QUERY
+// ==========================
+async function fetchEpisodesByDate(dateStr) {
+  return await fetchJSON(
+    `https://api.tvmaze.com/episodes?date=${dateStr}&embed=show`
+  );
+}
+
+// ==========================
 // BUILD SHOWS
 // ==========================
 async function buildShows() {
@@ -174,7 +183,9 @@ async function buildShows() {
   const showMap = new Map();
   const excludedSportsIds = new Set();
 
-  // --- 1) TVMaze schedule (10 days)
+  // --------------------------
+  // 1) TVMAZE SCHEDULE (10 days)
+  // --------------------------
   for (let i = 0; i < 10; i++) {
     const d = new Date(todayStr);
     d.setDate(d.getDate() - i);
@@ -199,8 +210,8 @@ async function buildShows() {
           excludedSportsIds.add(show.id);
           continue;
         }
-        if (isForeign(show)) continue;
         if (isNews(show)) continue;
+        if (isForeign(show)) continue;
 
         const cur = showMap.get(show.id);
         if (!cur) showMap.set(show.id, { show, episodes: [ep] });
@@ -209,7 +220,9 @@ async function buildShows() {
     }
   }
 
-  // --- 2) TMDB fallback mapped → TVMaze
+  // ----------------------------------------
+  // 2) TMDB DISCOVER → IMDB → TVMAZE FALLBACK
+  // ----------------------------------------
   const tmdbList = await fetchTMDBDiscoverPages();
   const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
 
@@ -218,8 +231,8 @@ async function buildShows() {
     if (!show?.id) continue;
 
     if (excludedSportsIds.has(show.id)) continue;
-    if (isForeign(show)) continue;
     if (isNews(show)) continue;
+    if (isForeign(show)) continue;
     if (isSportsShow(show) || looksLikeSports(show)) continue;
 
     const eps = show._embedded?.episodes || [];
@@ -230,7 +243,51 @@ async function buildShows() {
     else cur.episodes.push(...eps);
   }
 
-  // --- 3) FINAL FILTER + SORT
+  // ----------------------------------------
+  // 3) NEW FALLBACK: EPISODE-DATE QUERY (10 DAYS)
+  // ----------------------------------------
+  for (let i = 0; i < 10; i++) {
+    const d = new Date(todayStr);
+    d.setDate(d.getDate() - i);
+
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const dateStr = `${y}-${m}-${day}`;
+
+    const epsByDate = await fetchEpisodesByDate(dateStr);
+    if (!Array.isArray(epsByDate)) continue;
+
+    for (const ep of epsByDate) {
+      const show = ep?._embedded?.show;
+      if (!show?.id) continue;
+
+      if (isSportsShow(show)) {
+        excludedSportsIds.add(show.id);
+        continue;
+      }
+      if (isNews(show)) continue;
+      if (isForeign(show)) continue;
+      if (looksLikeSports(show)) continue;
+
+      // Load full detail for this show
+      const detail = await fetchJSON(
+        `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
+      );
+      if (!detail?.id) continue;
+
+      const allEps = detail._embedded?.episodes || [];
+
+      const cur = showMap.get(show.id);
+      if (!cur)
+        showMap.set(show.id, { show: detail, episodes: allEps });
+      else cur.episodes.push(...allEps);
+    }
+  }
+
+  // --------------------------
+  // 4) FINAL FILTER + SORT
+  // --------------------------
   const list = [...showMap.values()]
     .map((v) => {
       const recent = filterLastNDays(v.episodes, 10, todayStr);
@@ -270,9 +327,10 @@ export default async function handler(req) {
     return new Response(
       JSON.stringify({
         id: "tvmaze-weekly-schedule",
-        version: "2.0.0",
+        version: "3.0.0",
         name: "Weekly Schedule",
-        description: "English shows aired in the last 10 days. No news, talk shows, or sports shows.",
+        description:
+          "English shows aired in the last 10 days. Includes fallback for missing shows. No sports, news, or talk shows.",
         catalogs: [
           {
             type: "series",
@@ -288,15 +346,16 @@ export default async function handler(req) {
     );
   }
 
-  // Catalog route
+  // catalog
   if (p.startsWith("/catalog/series/tvmaze_weekly_schedule.json")) {
     const shows = await buildShows();
-    return new Response(JSON.stringify({ metas: shows, ts: Date.now() }, null, 2), {
-      headers: CORS,
-    });
+    return new Response(
+      JSON.stringify({ metas: shows, ts: Date.now() }, null, 2),
+      { headers: CORS }
+    );
   }
 
-  // Meta route
+  // meta
   if (p.startsWith("/meta/series/")) {
     const id = p.split("/").pop().replace(".json", "");
     const showId = id.replace("tvmaze:", "");
