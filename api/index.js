@@ -60,13 +60,9 @@ function isNews(show) {
   return t === "news" || t === "talk show";
 }
 
-// BLOCK: Football Shows
-function isFootballShow(show) {
-  const name = (show.name || "").toLowerCase();
-  const genres = (show.genres || []).map((g) => g.toLowerCase());
-
-  // Include shows with "football" in the name or genre
-  return name.includes("football") || genres.includes("football");
+// BLOCK: Sports Shows (to exclude)
+function isSportsShow(show) {
+  return (show.type || "").toLowerCase() === "sports";
 }
 
 async function pMap(list, fn, concurrency) {
@@ -193,7 +189,7 @@ async function buildShows() {
         if (!show?.id) continue;
         if (isForeign(show)) continue;
         if (isNews(show)) continue;
-        if (!isFootballShow(show)) continue; // <- football filter
+        if (isSportsShow(show)) continue; // <- exclude Sports shows
 
         const cur = showMap.get(show.id);
         if (!cur) showMap.set(show.id, { show, episodes: [ep] });
@@ -211,7 +207,7 @@ async function buildShows() {
     if (!show?.id) continue;
     if (isForeign(show)) continue;
     if (isNews(show)) continue;
-    if (!isFootballShow(show)) continue; // <- football filter
+    if (isSportsShow(show)) continue; // <- exclude Sports shows
 
     const detail = await fetchJSON(
       `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
@@ -267,7 +263,7 @@ export default async function handler(req) {
           version: "1.0.0",
           name: "Weekly Schedule",
           description:
-            "English football shows aired in the last 10 days. No news or talk shows.",
+            "English shows aired in the last 10 days. No news, talk shows, or sports shows.",
           catalogs: [
             {
               type: "series",
