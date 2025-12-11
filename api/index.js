@@ -161,6 +161,7 @@ async function buildShows() {
   const todayStr = `${yyyy}-${mm}-${dd}`;
 
   const showMap = new Map();
+  const excludedSportsIds = new Set(); // Track Sports shows from TVMaze
 
   // --- 1) TVMaze schedules: last 10 days ---
   for (let i = 0; i < 10; i++) {
@@ -187,9 +188,15 @@ async function buildShows() {
       for (const ep of list) {
         const show = ep?.show || ep?._embedded?.show;
         if (!show?.id) continue;
+
+        // Automatically track Sports shows
+        if (isSportsShow(show)) {
+          excludedSportsIds.add(show.id);
+          continue;
+        }
+
         if (isForeign(show)) continue;
         if (isNews(show)) continue;
-        if (isSportsShow(show)) continue; // <- exclude Sports shows
 
         const cur = showMap.get(show.id);
         if (!cur) showMap.set(show.id, { show, episodes: [ep] });
@@ -205,14 +212,22 @@ async function buildShows() {
   for (const entry of tmdbMapped) {
     const show = entry.tvmaze;
     if (!show?.id) continue;
+
+    // Skip any show already identified as Sports from TVMaze
+    if (excludedSportsIds.has(show.id)) continue;
+
     if (isForeign(show)) continue;
     if (isNews(show)) continue;
-    if (isSportsShow(show)) continue; // <- exclude Sports shows
 
     const detail = await fetchJSON(
       `https://api.tvmaze.com/shows/${show.id}?embed=episodes`
     );
-    const eps = detail?._embedded?.episodes || [];
+    if (!detail) continue;
+
+    // Safety check: skip if TMDB mapping is actually a Sports show
+    if (isSportsShow(detail)) continue;
+
+    const eps = detail._embedded?.episodes || [];
     if (!eps.length) continue;
 
     const cur = showMap.get(show.id);
