@@ -96,14 +96,11 @@ const url =
 `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
 `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
 
-```
 const json = await fetchJSON(url);
 if (!json?.results?.length) break;
 
 results.push(...json.results);
 if (page >= json.total_pages) break;
-```
-
 }
 
 return results;
@@ -116,7 +113,7 @@ list,
 async (item) => {
 if (!item?.id) return null;
 
-```
+
     const ext = await fetchJSON(
       `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
     );
@@ -137,7 +134,7 @@ if (!item?.id) return null;
   },
   TMDB_CONCURRENCY
 )
-```
+
 
 ).filter(Boolean);
 }
@@ -179,7 +176,6 @@ for (let i = 0; i < 10; i++) {
 const d = new Date(todayStr);
 d.setDate(d.getDate() - i);
 
-```
 const y = d.getUTCFullYear();
 const m = String(d.getUTCMonth() + 1).padStart(2, "0");
 const day = String(d.getUTCDate()).padStart(2, "0");
@@ -204,7 +200,6 @@ for (const ep of full) {
   if (!cur) showMap.set(show.id, { show, episodes: [ep] });
   else cur.episodes.push(ep);
 }
-```
 
 }
 
@@ -222,14 +217,13 @@ if (isForeign(show)) continue;
 if (isNews(show)) continue;
 if (isSportsShow(show) || looksLikeSports(show)) continue;
 
-```
 const eps = show._embedded?.episodes || [];
 if (!eps.length) continue;
 
 const cur = showMap.get(show.id);
 if (!cur) showMap.set(show.id, { show, episodes: eps });
 else cur.episodes.push(...eps);
-```
+
 
 }
 
@@ -241,7 +235,6 @@ const list = [...showMap.values()]
 const recent = filterLastNDays(v.episodes, 10, todayStr);
 if (!recent.length) return null;
 
-```
   const latestDate = recent
     .map((e) => pickDate(e))
     .filter(Boolean)
@@ -260,7 +253,7 @@ if (!recent.length) return null;
 })
 .filter(Boolean)
 .sort((a, b) => b.latestDate.localeCompare(a.latestDate));
-```
+
 
 return list;
 }
@@ -314,7 +307,6 @@ if (p.startsWith("/meta/series/")) {
 const id = p.split("/").pop().replace(".json", "");
 const showId = id.replace("tvmaze:", "");
 
-```
 const show = await fetchJSON(
   `https://api.tvmaze.com/shows/${showId}?embed=episodes`
 );
@@ -355,7 +347,6 @@ return new Response(
   ),
   { headers: CORS }
 );
-```
 
 }
 
