@@ -37,6 +37,9 @@ function pickDate(ep) {
   return null;
 }
 
+// ==========================
+// FILTERS
+// ==========================
 function isForeign(show) {
   const lang = (show.language || "english").toLowerCase();
   const name = show.name || "";
@@ -62,7 +65,6 @@ function isSportsShow(show) {
   return (show.type || "").trim().toLowerCase() === "sports";
 }
 
-// Catch fallback sports shows by name or network keywords
 function looksLikeSports(show) {
   const name = (show.name || "").toLowerCase();
   const network = (show.network?.name || "").toLowerCase();
@@ -74,6 +76,9 @@ function looksLikeSports(show) {
   );
 }
 
+// ==========================
+// pMap
+// ==========================
 async function pMap(list, fn, concurrency) {
   const out = [];
   let i = 0;
@@ -94,7 +99,7 @@ async function pMap(list, fn, concurrency) {
 }
 
 // ==========================
-// TMDB → IMDB → TVMaze
+// TMDB → TVMaze
 // ==========================
 async function fetchTMDBDiscoverPages(pages = MAX_TMDB_PAGES) {
   const results = [];
@@ -149,16 +154,14 @@ function filterLastNDays(episodes, n, todayStr) {
   return episodes.filter((ep) => {
     const dateStr = pickDate(ep);
     if (!dateStr) return false;
-
     if (dateStr > todayStr) return false;
-
     const d = new Date(dateStr);
     return d >= start && d <= today;
   });
 }
 
 // ==========================
-// BUILD SHOWS
+// FINAL LOGIC: BUILD SHOWS
 // ==========================
 async function buildShows() {
   const now = new Date();
@@ -170,15 +173,12 @@ async function buildShows() {
   const showMap = new Map();
   const excludedSportsIds = new Set();
 
-  // --- 1) TVMaze schedule ---
+  // -------- 1) TVMaze schedules --------
   for (let i = 0; i < 10; i++) {
     const d = new Date(todayStr);
     d.setDate(d.getDate() - i);
 
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    const dateStr = `${y}-${m}-${day}`;
+    const dateStr = d.toISOString().slice(0, 10);
 
     const a = await fetchJSON(`https://api.tvmaze.com/schedule?country=US&date=${dateStr}`);
     const b = await fetchJSON(`https://api.tvmaze.com/schedule/web?date=${dateStr}`);
@@ -186,6 +186,7 @@ async function buildShows() {
 
     for (const list of [a, b, c]) {
       if (!Array.isArray(list)) continue;
+
       for (const ep of list) {
         const show = ep?.show || ep?._embedded?.show;
         if (!show?.id) continue;
@@ -205,11 +206,11 @@ async function buildShows() {
     }
   }
 
-  // --- 2) TMDB fallback ---
+  // -------- 2) TMDB fallback --------
   const tmdbList = await fetchTMDBDiscoverPages();
-  const tmdbMapped = await tmdbToTvmazeShows(tmdbList);
+  const mapped = await tmdbToTvmazeShows(tmdbList);
 
-  for (const entry of tmdbMapped) {
+  for (const entry of mapped) {
     const show = entry.tvmaze;
     if (!show?.id) continue;
 
@@ -231,10 +232,11 @@ async function buildShows() {
     else cur.episodes.push(...eps);
   }
 
-  // --- 3) FINAL FILTER + SORT ---
+  // -------- 3) FINAL FILTER --------
   const list = [...showMap.values()]
     .map((v) => {
-      const recent = filterLastNDays(v.episodes, 10, todayStr);
+      const combined = v.episodes;
+      const recent = filterLastNDays(combined, 10, todayStr);
       if (!recent.length) return null;
 
       const latestDate = recent
@@ -268,48 +270,52 @@ export default async function handler(req) {
 
   if (p === "/manifest.json") {
     return new Response(
-      JSON.stringify({
-        id: "tvmaze-weekly-schedule",
-        version: "1.0.0",
-        name: "Weekly Schedule",
-        description:
-          "English shows aired in the last 10 days. No news, talk shows, or sports shows.",
-        catalogs: [
-          {
-            type: "series",
-            id: "tvmaze_weekly_schedule",
-            name: "Weekly Schedule",
-          },
-        ],
-        resources: ["catalog", "meta"],
-        types: ["series"],
-        idPrefixes: ["tvmaze"],
-      }),
+      JSON.stringify(
+        {
+          id: "tvmaze-weekly-schedule",
+          version: "1.0.0",
+          name: "Weekly Schedule",
+          description:
+            "English shows aired in the last 10 days. No news, talk shows, or sports shows.",
+          catalogs: [
+            {
+              type: "series",
+              id: "tvmaze_weekly_schedule",
+              name: "Weekly Schedule",
+            },
+          ],
+          resources: ["catalog", "meta"],
+          types: ["series"],
+          idPrefixes: ["tvmaze"],
+        },
+        null,
+        2
+      ),
       { headers: CORS }
     );
   }
 
   if (p.startsWith("/catalog/series/tvmaze_weekly_schedule.json")) {
     const shows = await buildShows();
-
-    // Add cache-busting timestamp
-    const response = {
-      metas: shows,
-      ts: Date.now(),
-    };
-
-    return new Response(JSON.stringify(response, null, 2), { headers: CORS });
+    return new Response(
+      JSON.stringify({ metas: shows, ts: Date.now() }, null, 2),
+      { headers: CORS }
+    );
   }
 
   if (p.startsWith("/meta/series/")) {
     const id = p.split("/").pop().replace(".json", "");
     const showId = id.replace("tvmaze:", "");
 
-    const show = await fetchJSON(`https://api.tvmaze.com/shows/${showId}?embed=episodes`);
+    const show = await fetchJSON(
+      `https://api.tvmaze.com/shows/${showId}?embed=episodes`
+    );
 
     if (!show) {
       return new Response(
-        JSON.stringify({ meta: { id, type: "series", name: "Unknown", videos: [] } }),
+        JSON.stringify({
+          meta: { id, type: "series", name: "Unknown", videos: [] },
+        }),
         { headers: CORS }
       );
     }
@@ -324,17 +330,21 @@ export default async function handler(req) {
     }));
 
     return new Response(
-      JSON.stringify({
-        meta: {
-          id: `tvmaze:${show.id}`,
-          type: "series",
-          name: show.name,
-          description: cleanHTML(show.summary),
-          poster: show.image?.original || show.image?.medium || null,
-          background: show.image?.original || null,
-          videos: eps,
+      JSON.stringify(
+        {
+          meta: {
+            id: `tvmaze:${show.id}`,
+            type: "series",
+            name: show.name,
+            description: cleanHTML(show.summary),
+            poster: show.image?.original || show.image?.medium || null,
+            background: show.image?.original || null,
+            videos: eps,
+          },
         },
-      }),
+        null,
+        2
+      ),
       { headers: CORS }
     );
   }
