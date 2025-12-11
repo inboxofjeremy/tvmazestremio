@@ -204,7 +204,20 @@ async function buildShows() {
       }
     }
   }
-  // --- 1B) TVMaze episodes-by-date fallback ---
+// --- 1B) TVMaze episodes-by-date fallback (safe + fast) ---
+const likelyMissing = [...showMap.values()].filter((entry) => {
+  const eps = entry.episodes || [];
+  if (eps.length === 0) return true; // no episodes at all
+
+  // check if latest episode is older than 10 days
+  const dates = eps.map((e) => pickDate(e)).filter(Boolean);
+  if (!dates.length) return true;
+
+  dates.sort();
+  const latest = dates[dates.length - 1];
+  return latest < todayStr; 
+});
+
 for (let i = 0; i < 10; i++) {
   const d = new Date(todayStr);
   d.setDate(d.getDate() - i);
@@ -214,22 +227,19 @@ for (let i = 0; i < 10; i++) {
   const day = String(d.getUTCDate()).padStart(2, "0");
   const dateStr = `${y}-${m}-${day}`;
 
-  // Check every known show for missing episodes on that date
-  for (const [showId, entry] of showMap) {
-    const alreadyHave = entry.episodes.some((ep) => pickDate(ep) === dateStr);
-    if (alreadyHave) continue;
+  for (const entry of likelyMissing) {
+    const showId = entry.show.id;
 
     const fallback = await fetchJSON(
       `https://api.tvmaze.com/shows/${showId}/episodesbydate?date=${dateStr}`
     );
 
     if (Array.isArray(fallback) && fallback.length > 0) {
-      for (const ep of fallback) {
-        entry.episodes.push(ep);
-      }
+      entry.episodes.push(...fallback);
     }
   }
 }
+
 
 
   // --- 2) TMDB fallback ---
