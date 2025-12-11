@@ -103,13 +103,13 @@ const url =
 `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}` +
 `&sort_by=first_air_date.desc&language=en-US&page=${page}`;
 
-```
+
 const json = await fetchJSON(url);
 if (!json?.results?.length) break;
 
 results.push(...json.results);
 if (page >= json.total_pages) break;
-```
+
 
 }
 return results;
@@ -122,7 +122,7 @@ list,
 async (item) => {
 if (!item?.id) return null;
 
-```
+
     const ext = await fetchJSON(
       `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
     );
