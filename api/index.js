@@ -135,7 +135,7 @@ list,
 async (item) => {
 if (!item?.id) return null;
 
-```
+
     const ext = await fetchJSON(
       `https://api.themoviedb.org/3/tv/${item.id}/external_ids?api_key=${TMDB_API_KEY}`
     );
