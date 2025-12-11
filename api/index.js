@@ -291,7 +291,14 @@ export default async function handler(req) {
 
   if (p.startsWith("/catalog/series/tvmaze_weekly_schedule.json")) {
     const shows = await buildShows();
-    return new Response(JSON.stringify({ metas: shows }, null, 2), { headers: CORS });
+
+    // Add cache-busting timestamp
+    const response = {
+      metas: shows,
+      ts: Date.now(),
+    };
+
+    return new Response(JSON.stringify(response, null, 2), { headers: CORS });
   }
 
   if (p.startsWith("/meta/series/")) {
