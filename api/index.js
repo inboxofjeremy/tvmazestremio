@@ -199,7 +199,7 @@ for (let i = 0; i < 10; i++) {
 const d = new Date(todayStr);
 d.setDate(d.getDate() - i);
 
-```
+
 const y = d.getUTCFullYear();
 const m = String(d.getUTCMonth() + 1).padStart(2, "0");
 const day = String(d.getUTCDate()).padStart(2, "0");
@@ -236,7 +236,7 @@ for (const list of [a, b, c]) {
     }
   }
 }
-```
+
 
 }
 
@@ -250,7 +250,7 @@ for (const entry of tmdbMapped) {
 const show = entry.tvmaze;
 if (!show?.id) continue;
 
-```
+
 if (!isAllowedCountry(show)) continue;
 if (isForeign(show)) continue;
 if (isNews(show)) continue;
@@ -265,7 +265,7 @@ if (!cur) {
 } else {
   cur.episodes.push(...eps);
 }
-```
+
 
 }
 
@@ -277,7 +277,7 @@ const list = [...showMap.values()]
 const recent = filterLastNDays(v.episodes, 10, todayStr);
 if (!recent.length) return null;
 
-```
+
   const latestDate = recent
     .map((e) => pickDate(e))
     .filter(Boolean)
@@ -296,7 +296,7 @@ if (!recent.length) return null;
 })
 .filter(Boolean)
 .sort((a, b) => b.latestDate.localeCompare(a.latestDate));
-```
+
 
 return list;
 }
@@ -347,7 +347,7 @@ if (p.startsWith("/meta/series/")) {
 const id = p.split("/").pop().replace(".json", "");
 const showId = id.replace("tvmaze:", "");
 
-```
+
 const show = await fetchJSON(
   `https://api.tvmaze.com/shows/${showId}?embed=episodes`
 );
@@ -388,7 +388,7 @@ return new Response(
   ),
   { headers: CORS }
 );
-```
+
 
 }
 
